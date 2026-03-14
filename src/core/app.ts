@@ -46,16 +46,28 @@ export class App {
       try {
         let streamed = false;
         let lastUpdateText: string | undefined;
-        const text = await this.handleIncoming(message, async (update) => {
-          streamed = true;
-          lastUpdateText = update;
-          await this.feishu?.send({
-            chatId: message.chatId,
-            text: update,
-            replyToMessageId: message.messageId,
-            threadId: message.threadId
-          });
-        });
+        const sendUpdateSafely = async (update: string): Promise<void> => {
+          try {
+            await this.feishu?.send({
+              chatId: message.chatId,
+              text: update,
+              replyToMessageId: message.messageId,
+              threadId: message.threadId
+            });
+            streamed = true;
+            lastUpdateText = update;
+          } catch (error) {
+            console.error("failed to send Feishu update", {
+              messageId: message.messageId,
+              chatId: message.chatId,
+              threadId: message.threadId,
+              textPreview: this.previewText(update),
+              error
+            });
+          }
+        };
+
+        const text = await this.handleIncoming(message, sendUpdateSafely);
         if ((text && text !== lastUpdateText) || !streamed) {
           await this.feishu?.send({
             chatId: message.chatId,
@@ -64,6 +76,13 @@ export class App {
             threadId: message.threadId
           });
         }
+        console.log("bridge handled message", {
+          messageId: message.messageId,
+          chatId: message.chatId,
+          threadId: message.threadId,
+          streamed,
+          finalPreview: this.previewText(text)
+        });
       } catch (error) {
         const text = error instanceof Error ? error.message : "Unknown bridge error.";
         try {
@@ -96,7 +115,7 @@ export class App {
         "- `/help` show commands",
         "- `/status` show current session and run state",
         "- `/new` create and bind a fresh Codex session",
-        "- `/session [list [-n N|--all] [--all-projects]|-h|--help]` show the current bound session, list recent sessions, or show session help",
+        "- `/session [list [-n N|--all] [--all-projects] [--project]|-h|--help]` show the current bound session, list recent sessions, or show session help",
         "- `/resume [--last|<session-id>|-n N|-h|--all] [--all-projects] [-C|--cd <dir>]` bind the latest session by default, optionally switching project",
         "- `/stop` stop the current active run",
         "- `/project [list [--all|--trusted]|bind [-n N|-m|--mkdir <path>|<path>]|-h]` show, list, or bind projects",
@@ -110,6 +129,12 @@ export class App {
     const key = conversationKeyFor(message);
     const existing = await this.store.get(key);
     const activeRun = this.activeRuns.get(key);
+    let sentEarlyUpdate = false;
+    const sendEarlyUpdate = async (text: string): Promise<void> => {
+      if (!onUpdate || sentEarlyUpdate) return;
+      sentEarlyUpdate = true;
+      await onUpdate(text);
+    };
 
     if (command?.name === "status") {
       const project = existing?.project || this.config.project.defaultProject;
@@ -154,6 +179,7 @@ export class App {
       const resumeArgs = [...command.args];
       const cdIndex = resumeArgs.findIndex((arg) => arg === "-C" || arg === "--cd");
       let resumeProject = existing?.project || this.config.project.defaultProject;
+      let projectExplicitlySelected = false;
       if (cdIndex >= 0) {
         const requestedProject = resumeArgs[cdIndex + 1];
         if (!requestedProject) {
@@ -163,10 +189,12 @@ export class App {
           requestedProject,
           existing?.project || this.config.project.defaultProject
         );
+        projectExplicitlySelected = true;
         resumeArgs.splice(cdIndex, 2);
       }
 
       const allProjects = this.consumeFlag(resumeArgs, "--all-projects");
+      const sortByProject = this.consumeFlag(resumeArgs, "--project");
       if (resumeArgs[0] === "-h" || resumeArgs[0] === "--help") {
         return this.resumeHelpText();
       }
@@ -184,8 +212,9 @@ export class App {
         }
         return this.renderSessionList(
           allProjects ? "Resume All Projects" : "Resume Current Project",
-          sessions,
-          existing?.codexSessionId
+          this.sortSessionsForDisplay(sessions, sortByProject),
+          existing?.codexSessionId,
+          sortByProject
         );
       }
       if ((resumeArgs[0] || "").startsWith("-") && resumeArgs[0] !== "-n") {
@@ -193,14 +222,17 @@ export class App {
           "# Resume",
           "",
           `- **error**: unsupported bridge option \`${resumeArgs[0]}\``,
-          "- **supported**: `/resume`, `/resume --last`, `/resume -n N`, `/resume <session-id>`, `/resume --all`, `/resume --all-projects`, `/resume -h`, `/resume ... -C <dir>`",
+          "- **supported**: `/resume`, `/resume --last`, `/resume -n N`, `/resume <session-id>`, `/resume --all`, `/resume --all-projects`, `/resume --project`, `/resume -h`, `/resume ... -C <dir>`",
           "- Use a normal follow-up message after `/resume ...` if you want to continue the bound session."
         ].join("\n");
       }
 
       let targetSessionId =
         resumeArgs[0] ||
-        (await this.findMostRecentSessionId(resumeProject, allProjects)) ||
+        (await this.findMostRecentSessionId(
+          resumeProject,
+          projectExplicitlySelected ? false : allProjects
+        )) ||
         existing?.codexSessionId;
       let resumeSource = resumeArgs[0] ? "explicit" : "latest";
       let resumeWarning: string | undefined;
@@ -211,10 +243,13 @@ export class App {
         if (!Number.isInteger(index) || index < 1) {
           return "Usage: `/resume -n <index>` where `<index>` is an integer >= 1.";
         }
-        const sessions = await this.listScopedSessions(
-          Math.min(index, this.config.codex.sessionAllDefaultCount),
-          resumeProject,
-          allProjects
+        const sessions = this.sortSessionsForDisplay(
+          await this.listScopedSessions(
+            Math.min(index, this.config.codex.sessionAllDefaultCount),
+            resumeProject,
+            allProjects
+          ),
+          sortByProject
         );
         const selected = sessions[index - 1];
         if (!selected) {
@@ -230,6 +265,7 @@ export class App {
       if (!targetSessionId) {
         return `No native Codex session found${allProjects ? "" : " for the current project"}. Use \`/session list${allProjects ? " --all-projects" : ""}\` or \`/resume <session-id>\`.`;
       }
+      await sendEarlyUpdate(`resolving session ${targetSessionId} for project \`${resumeProject}\`...`);
       const sessionExists = await this.codex.getSession(targetSessionId);
       if (!sessionExists) {
         return `session not found: ${targetSessionId}`;
@@ -259,6 +295,7 @@ export class App {
     if (command?.name === "session") {
       const sessionArgs = [...command.args];
       const allProjects = this.consumeFlag(sessionArgs, "--all-projects");
+      const sortByProject = this.consumeFlag(sessionArgs, "--project");
       if (sessionArgs[0] === "-h" || sessionArgs[0] === "--help") {
         return this.sessionsHelpText();
       }
@@ -274,8 +311,9 @@ export class App {
         }
         return this.renderSessionList(
           allProjects ? "All Project Sessions" : "Current Project Sessions",
-          sessions,
-          existing?.codexSessionId
+          this.sortSessionsForDisplay(sessions, sortByProject),
+          existing?.codexSessionId,
+          sortByProject
         );
       }
 
@@ -300,6 +338,7 @@ export class App {
         return `Cannot create a new session while run=${activeRun.runId} is ${activeRun.status}. Use /stop first.`;
       }
       const project = binding?.project || this.config.project.defaultProject;
+      await sendEarlyUpdate(`creating a new Codex session for project \`${project}\`...`);
       const sessionId = await this.codex.createSession(project, this.resolveTurnOptions(binding));
       const nextBinding = this.makeBinding(key, sessionId, project, binding);
       await this.store.put(nextBinding);
@@ -318,6 +357,7 @@ export class App {
       if (!activeRun) {
         return "No active run for this conversation.";
       }
+      await sendEarlyUpdate(`stopping run \`${activeRun.runId}\`...`);
       this.activeRuns.set(key, { ...activeRun, status: "stopping" });
       const stopped = await this.codex.stop(activeRun.runId);
       return stopped
@@ -395,6 +435,7 @@ export class App {
       const nextBinding = binding
         ? { ...binding, project, updatedAt: new Date().toISOString() }
         : this.makeBinding(key, undefined, project);
+      await sendEarlyUpdate(`binding project \`${project}\`...`);
       await this.store.put(nextBinding);
       return [
         "# Project",
@@ -426,6 +467,7 @@ export class App {
           "- **choices**: `auto`, `full-access`"
         ].join("\n");
       }
+      await sendEarlyUpdate(`switching approvals to \`${nextMode}\`...`);
       this.config.codex.sandboxMode = nextMode;
       await this.persistJsonSetting("CODEX_SANDBOX_MODE", nextMode);
       return [
@@ -458,6 +500,7 @@ export class App {
             this.config.project.defaultProject,
             { searchEnabled: normalized === "on" }
           );
+      await sendEarlyUpdate(`switching search ${normalized}...`);
       await this.store.put(nextBinding);
       return `# Search\n\n- **mode**: \`${nextBinding.searchEnabled ? "on" : "off"}\``;
     }
@@ -485,6 +528,9 @@ export class App {
               model: ["clear", "default", "reset"].includes(nextValue.toLowerCase()) ? undefined : nextValue
             }
           );
+      await sendEarlyUpdate(
+        `switching model to \`${nextBinding.model || "(default)"}\`...`
+      );
       await this.store.put(nextBinding);
       return `# Model\n\n- **model**: \`${nextBinding.model || "(default)"}\``;
     }
@@ -512,6 +558,9 @@ export class App {
               profile: ["clear", "default", "reset"].includes(nextValue.toLowerCase()) ? undefined : nextValue
             }
           );
+      await sendEarlyUpdate(
+        `switching profile to \`${nextBinding.profile || "(default)"}\`...`
+      );
       await this.store.put(nextBinding);
       return `# Profile\n\n- **profile**: \`${nextBinding.profile || "(default)"}\``;
     }
@@ -526,6 +575,7 @@ export class App {
     }
 
     const project = binding?.project || this.config.project.defaultProject;
+    await sendEarlyUpdate(`sending prompt to Codex for project \`${project}\`...`);
     const provisionalRunId = `pending:${randomUUID()}`;
     this.activeRuns.set(key, {
       conversationKey: key,
@@ -729,6 +779,11 @@ export class App {
     return [...defaultList, ...trustedOnly];
   }
 
+  private previewText(value: string, maxLength = 120): string {
+    const compact = value.replace(/\s+/g, " ").trim();
+    return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength - 3)}...`;
+  }
+
   private isAllowedProject(project: string): boolean {
     return this.config.project.allowedRoots.some((root) => {
       const relative = path.relative(root, project);
@@ -777,6 +832,7 @@ export class App {
       "- `/resume -n 3`",
       "- `/resume <session-id>`",
       "- `/resume --all-projects`",
+      "- `/resume --all --all-projects --project`",
       "- `/resume --last -C subdir`",
       "- `/resume -h`",
       "- `/resume --all`",
@@ -788,6 +844,7 @@ export class App {
       "- `/resume <session-id>` binds a specific native session id.",
       "- `-C, --cd <dir>` switches the bound project while resuming the session.",
       "- `--all-projects` expands browsing beyond the current project.",
+      "- `--project` sorts list output by project name, then time.",
       "- `/resume --all` shows the recent sessions list for the current project in Feishu instead of opening an interactive picker.",
       `- In Feishu, use \`/session list --all\` for the default current-project list of \`${this.config.codex.sessionAllDefaultCount}\` sessions, or \`/session list --all --all-projects\` to browse across projects.`,
       "- Index-based resume is order-dependent and should be treated as a convenience, not a stable identifier.",
@@ -808,6 +865,7 @@ export class App {
       "- `/session list -n 12`",
       "- `/session list --all`",
       "- `/session list --all-projects`",
+      "- `/session list --all --all-projects --project`",
       "- `/session -h`",
       "",
       "## Notes",
@@ -815,6 +873,7 @@ export class App {
       "- `/session` shows the current bound session for this conversation.",
       "- `/session list` shows recent native Codex sessions for the current project.",
       "- `--all-projects` expands the list across `CODEX_SESSIONS_DIR`.",
+      "- `--project` sorts list output by project name, then time.",
       `- \`/session list\` defaults to \`${this.config.codex.sessionListDefaultCount}\` sessions for the current project.`,
       `- \`/session list --all\` uses the default count \`${this.config.codex.sessionAllDefaultCount}\` for the current project.`,
       `- \`-n\` accepts values from \`1\` to \`${this.config.codex.sessionAllDefaultCount}\`.`,
@@ -856,19 +915,36 @@ export class App {
   private renderSessionList(
     title: string,
     sessions: Awaited<ReturnType<typeof listRecentSessions>>,
-    boundSessionId?: string
+    boundSessionId?: string,
+    sortedByProject = false
   ): string {
     const header = [
       `# ${title}`,
       "",
-      "| # | Bound | Session | Time | Cwd | About |",
+      sortedByProject ? "- sorted by: `project`, `time desc`" : "- sorted by: `time desc`",
+      "",
+      "| # | Bound | Project | Session | Time | About |",
       "|---|---|---|---|---|---|"
     ];
     const rows = sessions.map((session, index) => {
       const bound = session.sessionId === boundSessionId ? "yes" : "";
-      return `| ${index + 1} | ${bound} | \`${escapeMarkdownCell(session.sessionId)}\` | ${escapeMarkdownCell(session.createdAt || "(unknown)")} | \`${escapeMarkdownCell(session.cwd || "(unknown)")}\` | ${escapeMarkdownCell(session.preview || "")} |`;
+      return `| ${index + 1} | ${bound} | \`${escapeMarkdownCell(session.cwd || "(unknown)")}\` | \`${escapeMarkdownCell(session.sessionId)}\` | ${escapeMarkdownCell(session.createdAt || "(unknown)")} | ${escapeMarkdownCell(session.preview || "")} |`;
     });
     return [...header, ...rows].join("\n");
+  }
+
+  private sortSessionsForDisplay(
+    sessions: Awaited<ReturnType<typeof listRecentSessions>>,
+    byProject: boolean
+  ): Awaited<ReturnType<typeof listRecentSessions>> {
+    if (!byProject) {
+      return sessions;
+    }
+    return [...sessions].sort((a, b) => {
+      const projectCompare = (a.cwd || "").localeCompare(b.cwd || "");
+      if (projectCompare !== 0) return projectCompare;
+      return (b.createdAt || "").localeCompare(a.createdAt || "");
+    });
   }
 
   private renderProjectList(

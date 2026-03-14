@@ -446,8 +446,8 @@ class SpawnCodexBackend implements CodexBackend {
 
     const args = ["exec", "--json", "--skip-git-repo-check", "--cd", params.project];
 
-    if (params.options?.searchEnabled) {
-      args.push("--search");
+    if (params.options?.searchEnabled !== undefined) {
+      args.push("-c", `web_search="${params.options.searchEnabled ? "live" : "disabled"}"`);
     }
     if (params.options?.model) {
       args.push("-m", params.options.model);

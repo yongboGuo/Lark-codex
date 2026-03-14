@@ -26,17 +26,51 @@ export class FeishuGateway {
 
     const dispatcher = new Lark.EventDispatcher({}).register({
       "im.message.receive_v1": async (data) => {
+        console.log("Feishu raw receive event", {
+          eventId: data?.event_id,
+          messageId: data?.message?.message_id,
+          chatId: data?.message?.chat_id,
+          chatType: data?.message?.chat_type,
+          messageType: data?.message?.message_type,
+          hasContent: typeof data?.message?.content === "string",
+          senderOpenId: data?.sender?.sender_id?.open_id
+        });
         const message = normalizeIncoming(data);
-        if (!message) return;
-        if (message.senderOpenId && message.senderOpenId === this.config.botOpenId) return;
+        if (!message) {
+          console.warn("Feishu inbound event ignored", {
+            eventId: data?.event_id,
+            messageId: data?.message?.message_id,
+            reason: describeIgnoredMessage(data)
+          });
+          return;
+        }
+        if (message.senderOpenId && message.senderOpenId === this.config.botOpenId) {
+          console.log("Feishu inbound event ignored", {
+            eventId: data?.event_id,
+            messageId: message.messageId,
+            reason: "message from bot itself"
+          });
+          return;
+        }
 
-        const dedupKey = `${data.event_id ?? "event"}:${message.messageId}`;
+        const dedupKey = message.messageId;
         if (this.recentMessages.has(dedupKey)) return;
         this.recentMessages.set(dedupKey, Date.now());
+
+        console.log("Feishu inbound message", {
+          messageId: message.messageId,
+          chatId: message.chatId,
+          chatType: message.chatType,
+          threadId: message.threadId,
+          textPreview: previewText(message.text)
+        });
 
         void onMessage(message).catch((error: unknown) => {
           console.error("failed to process Feishu message", error);
         });
+      },
+      "im.message.message_read_v1": async () => {
+        // No-op. Registering the event avoids repeated SDK warnings for read receipts.
       }
     });
 
@@ -86,6 +120,11 @@ export class FeishuGateway {
             content: JSON.stringify({ text: chunk })
           }
         });
+        console.log("Feishu outbound message sent", {
+          chatId,
+          attempt,
+          textPreview: previewText(chunk)
+        });
         return;
       } catch (error) {
         lastError = error;
@@ -117,7 +156,7 @@ function normalizeIncoming(data: any): IncomingMessage | undefined {
   }
 
   const content = parseJson(data.message.content);
-  const text = typeof content?.text === "string" ? content.text.trim() : "";
+  const text = extractIncomingText(content).trim();
   if (!text) return undefined;
 
   return {
@@ -143,6 +182,66 @@ function parseJson(value: string): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
+}
+
+function extractIncomingText(content: Record<string, unknown> | undefined): string {
+  if (!content) return "";
+  const parts: string[] = [];
+  const title = typeof content.title === "string" ? content.title.trim() : "";
+  if (title) {
+    parts.push(title);
+  }
+  if (typeof content.text === "string") {
+    const text = content.text.trim();
+    if (text) parts.push(text);
+    return parts.join("\n");
+  }
+  if (Array.isArray(content.content)) {
+    const text = flattenFeishuPostContent(content.content);
+    if (text) parts.push(text);
+    return parts.join("\n");
+  }
+  return parts.join("\n");
+}
+
+function flattenFeishuPostContent(content: unknown[]): string {
+  const lines: string[] = [];
+
+  for (const block of content) {
+    if (!Array.isArray(block)) continue;
+    const parts: string[] = [];
+    for (const item of block) {
+      if (!item || typeof item !== "object") continue;
+      const tag = typeof (item as { tag?: unknown }).tag === "string" ? (item as { tag: string }).tag : "";
+      if (tag === "text") {
+        const text = (item as { text?: unknown }).text;
+        if (typeof text === "string" && text.trim()) {
+          parts.push(text);
+        }
+        continue;
+      }
+      if (tag === "a") {
+        const text = (item as { text?: unknown }).text;
+        const href = (item as { href?: unknown }).href;
+        if (typeof text === "string" && text.trim()) {
+          parts.push(text);
+        } else if (typeof href === "string" && href.trim()) {
+          parts.push(href);
+        }
+        continue;
+      }
+      if (tag === "at") {
+        const userName = (item as { user_name?: unknown }).user_name;
+        if (typeof userName === "string" && userName.trim()) {
+          parts.push(`@${userName}`);
+        }
+      }
+    }
+    const line = parts.join("").trim();
+    if (line) lines.push(line);
+  }
+
+  return lines.join("\n");
 }
 
 function splitMessageText(text: string, maxChars: number): string[] {
@@ -249,4 +348,23 @@ function compactValue(value: unknown): string {
   } catch {
     return "";
   }
+}
+
+function previewText(value: string, maxLength = 120): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength - 3)}...`;
+}
+
+function describeIgnoredMessage(data: any): string {
+  if (!data?.message?.message_id) return "missing message id";
+  if (!data?.message?.chat_id) return "missing chat id";
+  if (typeof data?.message?.content !== "string") return "missing string content";
+
+  const content = parseJson(data.message.content);
+  if (!content) return "message content is not valid JSON";
+  if (!extractIncomingText(content).trim()) {
+    return `unsupported content keys: ${Object.keys(content).join(", ") || "(none)"}`;
+  }
+  if (!extractIncomingText(content).trim()) return "empty text";
+  return "unknown";
 }
