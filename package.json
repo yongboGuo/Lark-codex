@@ -5,12 +5,12 @@
   "description": "Thin Feishu-native bridge for Codex native sessions.",
   "type": "module",
   "scripts": {
+    "install:local": "./install.sh",
     "dev": "tsx watch src/index.ts",
     "cli": "tsx src/index.ts --cli",
     "start": "node --enable-source-maps dist/index.js",
     "build": "tsc -p tsconfig.json",
-    "check": "tsc --noEmit -p tsconfig.json",
-    "service:install": "./scripts/install-user-unit.sh"
+    "check": "tsc --noEmit -p tsconfig.json"
   },
   "engines": {
     "node": ">=20"

@@ -76,7 +76,7 @@ export function loadConfig(): AppConfig {
   return {
     configPath: jsonConfig?.__path,
     nodeEnv,
-    port: Number(readSetting("PORT", "3300", jsonConfig)),
+    port: readIntegerSetting("PORT", "3300", jsonConfig, { min: 1 }),
     logLevel: readSetting("LOG_LEVEL", "info", jsonConfig),
     feishu: {
       appId: required("FEISHU_APP_ID"),
@@ -94,13 +94,22 @@ export function loadConfig(): AppConfig {
         readSetting("CODEX_SANDBOX_MODE", "workspace-write", jsonConfig) === "danger-full-access"
           ? "danger-full-access"
           : "workspace-write",
-      runTimeoutMs: Number(readSetting("CODEX_RUN_TIMEOUT_MS", "600000", jsonConfig)),
-      spawnStatusIntervalMs: Number(readSetting("SPAWN_STATUS_INTERVAL_MS", "15000", jsonConfig)),
+      runTimeoutMs: readIntegerSetting("CODEX_RUN_TIMEOUT_MS", "600000", jsonConfig, { min: 0 }),
+      spawnStatusIntervalMs: readIntegerSetting("SPAWN_STATUS_INTERVAL_MS", "15000", jsonConfig, {
+        min: 0
+      }),
       terminalRenderMode:
         readSetting("TERMINAL_RENDER_MODE", "markdown", jsonConfig) === "plain" ? "plain" : "markdown",
-      terminalFlushIdleMs: Number(readSetting("TERMINAL_FLUSH_IDLE_MS", "3000", jsonConfig)),
-      terminalFlushMaxChars: Number(readSetting("TERMINAL_FLUSH_MAX_CHARS", "4000", jsonConfig)),
-      terminalStartupTimeoutMs: Number(readSetting("TERMINAL_STARTUP_TIMEOUT_MS", "30000", jsonConfig))
+      terminalFlushIdleMs: readIntegerSetting("TERMINAL_FLUSH_IDLE_MS", "3000", jsonConfig, { min: 0 }),
+      terminalFlushMaxChars: readIntegerSetting("TERMINAL_FLUSH_MAX_CHARS", "4000", jsonConfig, {
+        min: 0
+      }),
+      terminalStartupTimeoutMs: readIntegerSetting(
+        "TERMINAL_STARTUP_TIMEOUT_MS",
+        "30000",
+        jsonConfig,
+        { min: 1 }
+      )
     },
     workspace: {
       root: workspaceRoot,
@@ -121,6 +130,20 @@ function readSetting(name: string, fallback: string, jsonConfig?: JsonConfigShap
   const jsonValue = jsonConfig?.[name];
   if (typeof jsonValue === "string" && jsonValue.length > 0) return jsonValue;
   return fallback;
+}
+
+function readIntegerSetting(
+  name: string,
+  fallback: string,
+  jsonConfig: JsonConfigShape | undefined,
+  options: { min: number }
+): number {
+  const raw = readSetting(name, fallback, jsonConfig);
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < options.min) {
+    throw new Error(`${name} must be an integer >= ${options.min}: ${JSON.stringify(raw)}`);
+  }
+  return value;
 }
 
 function loadJsonConfig(configPath?: string): JsonConfigShape | undefined {

@@ -68,21 +68,30 @@ For a full local install from the current checkout, including package install, b
 ./install.sh
 ```
 
+Or:
+
+```bash
+npm run install:local
+```
+
 ## User Service
 
 - Repo-owned systemd template: `deploy/systemd/codex-feishu-bridge.service.in`
 - User config templates: `deploy/config/bridge.env.example` and `deploy/config/config.json`
-- Install or update the user service:
+- Install or update the user service with:
 
 ```bash
-./scripts/install-user-unit.sh
+./install.sh
 ```
 
-- The installer renders the current checkout path into the unit, writes the unit to:
+- `install.sh` renders the current checkout path into the unit, writes the unit to:
   `~/.config/systemd/user/codex-feishu-bridge.service`
 - It preserves existing `~/.config/codex-feishu-bridge/bridge.env` and `config.json` if they
   already exist.
-- The installer asks for confirmation, then installs or updates the unit, reloads user systemd,
+- On a fresh install, `~/.config/codex-feishu-bridge/config.json` defaults
+  `CODEX_SANDBOX_MODE` to `danger-full-access`. Change that file if you want
+  `workspace-write` instead.
+- The script asks for confirmation, then installs or updates the unit, reloads user systemd,
   enables the service, and performs a hard restart.
 
 For local testing without Feishu, run `npm run cli -- --chat-id test-terminal`. This uses the same binding logic as Feishu `p2p:<chat_id>` conversations, so the chosen `chatId` becomes the reusable bridge conversation key.
@@ -94,10 +103,12 @@ For local testing without Feishu, run `npm run cli -- --chat-id test-terminal`. 
 - `CODEX_BACKEND_MODE=terminal` is experimental. It is intended for a terminal-derived Codex experience projected into Feishu, but the current Codex interactive CLI is still a full-screen TUI and not yet reliable enough to use as the default backend.
 - `CODEX_SANDBOX_MODE=workspace-write` maps to Codex `--full-auto`.
 - `CODEX_SANDBOX_MODE=danger-full-access` maps to Codex `--dangerously-bypass-approvals-and-sandbox`.
+- The checked-in user-service JSON template defaults to `danger-full-access`.
 - `CODEX_RUN_TIMEOUT_MS` controls the maximum lifetime of one active Codex run before the bridge terminates it.
 - `SPAWN_STATUS_INTERVAL_MS` controls the heartbeat interval for long-running `spawn` turns. Set it to `0` to disable heartbeats.
 - `TERMINAL_FLUSH_IDLE_MS` controls the quiet window before terminal output is projected back to Feishu as one reply.
 - `TERMINAL_FLUSH_MAX_CHARS` caps one terminal-mode Feishu reply so noisy screens do not flood the chat.
+- Numeric config values must be integers. Invalid values now fail fast during startup.
 
 ## Codex Profile Mode
 

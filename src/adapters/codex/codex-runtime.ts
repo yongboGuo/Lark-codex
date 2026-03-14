@@ -26,6 +26,7 @@ interface ActiveProcess {
 
 const CREATE_SESSION_PROMPT =
   "Initialize a new bridge session. Reply with exactly: READY";
+const STREAMED_OUTPUT_DEDUPE_WINDOW = 4;
 
 export function createCodexBackend(config: AppConfig["codex"]): CodexBackend {
   const spawnBackend = new SpawnCodexBackend(config);
@@ -146,6 +147,7 @@ class SpawnCodexBackend implements CodexBackend {
       let stderr = "";
       let settled = false;
       let lastStreamedOutput = "";
+      const streamedOutputs: string[] = [];
 
       const finish = (fn: () => void): void => {
         if (settled) return;
@@ -174,8 +176,17 @@ class SpawnCodexBackend implements CodexBackend {
         if (event.type === "item.completed" && event.item?.type === "agent_message") {
           if (typeof event.item.text === "string") {
             finalOutput = event.item.text;
-            if (event.item.text !== lastStreamedOutput) {
+            const normalized = event.item.text.trim();
+            if (
+              normalized &&
+              event.item.text !== lastStreamedOutput &&
+              !streamedOutputs.includes(normalized)
+            ) {
               lastStreamedOutput = event.item.text;
+              streamedOutputs.push(normalized);
+              if (streamedOutputs.length > STREAMED_OUTPUT_DEDUPE_WINDOW) {
+                streamedOutputs.shift();
+              }
               void params.hooks?.onUpdate?.(event.item.text);
             }
           }
