@@ -5,12 +5,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=@WORKDIR@
+WorkingDirectory=@HOME@
 EnvironmentFile=%h/.config/codex-feishu-bridge/bridge.env
 Environment=HOME=@HOME@
 Environment=TMPDIR=/tmp
 Environment=PATH=@PATH@
-ExecStart=@NODE_BIN@ --enable-source-maps @WORKDIR@/dist/index.js
+ExecStart=@BIN_PATH@
 TimeoutStopSec=15
 Restart=on-failure
 RestartSec=5

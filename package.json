@@ -4,6 +4,15 @@
   "private": true,
   "description": "Thin Feishu-native bridge for Codex native sessions.",
   "type": "module",
+  "bin": {
+    "codex-feishu-bridge": "./bin/codex-feishu-bridge.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md",
+    "package.json"
+  ],
   "scripts": {
     "install:local": "./install.sh",
     "dev": "tsx watch src/index.ts",

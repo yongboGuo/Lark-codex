@@ -12,16 +12,10 @@ ENV_TEMPLATE="${ROOT_DIR}/deploy/config/bridge.env.example"
 JSON_TEMPLATE="${ROOT_DIR}/deploy/config/config.json"
 ENV_PATH="${CONFIG_DIR}/bridge.env"
 JSON_PATH="${CONFIG_DIR}/config.json"
-NODE_BIN="$(command -v node)"
 USER_HOME="${HOME}"
 PATH_VALUE="${PATH}"
 
-if [[ ! -x "${NODE_BIN}" ]]; then
-  echo "node not found on PATH" >&2
-  exit 1
-fi
-
-echo "This will clean, install packages, build, install/update the user service, kill old bridge processes, and restart the service."
+echo "This will clean, install packages, build, install the package globally, install/update the user service, kill old bridge processes, and restart the service."
 echo "repo: ${ROOT_DIR}"
 echo "unit: ${UNIT_PATH}"
 echo "config: ${ENV_PATH}"
@@ -38,6 +32,15 @@ cd "${ROOT_DIR}"
 rm -rf dist
 npm install
 npm run build
+PACK_FILE="$(npm pack --json | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['filename'])")"
+npm install -g "./${PACK_FILE}"
+rm -f "${PACK_FILE}"
+
+BIN_PATH="$(command -v codex-feishu-bridge || true)"
+if [[ -z "${BIN_PATH}" ]]; then
+  echo "codex-feishu-bridge not found on PATH after npm install -g ." >&2
+  exit 1
+fi
 
 mkdir -p "${CONFIG_DIR}" "${SYSTEMD_DIR}"
 
@@ -63,8 +66,7 @@ if [[ ! -f "${JSON_PATH}" ]]; then
 fi
 
 sed \
-  -e "s|@WORKDIR@|${ROOT_DIR}|g" \
-  -e "s|@NODE_BIN@|${NODE_BIN}|g" \
+  -e "s|@BIN_PATH@|${BIN_PATH}|g" \
   -e "s|@HOME@|${USER_HOME}|g" \
   -e "s|@PATH@|${PATH_VALUE}|g" \
   "${UNIT_TEMPLATE}" > "${UNIT_PATH}"
@@ -79,7 +81,7 @@ for _ in $(seq 1 50); do
   fi
   sleep 0.2
 done
-pkill -f "${ROOT_DIR}/dist/index.js" || true
+systemctl --user kill --signal=SIGKILL "${UNIT_NAME}" || true
 systemctl --user daemon-reload
 systemctl --user reset-failed "${UNIT_NAME}" || true
 systemctl --user start "${UNIT_NAME}"
