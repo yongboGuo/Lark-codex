@@ -27,3 +27,123 @@ export async function findSessionFile(
   }
   return undefined;
 }
+
+export interface SessionSummary {
+  sessionId: string;
+  filePath: string;
+  createdAt?: string;
+  cwd?: string;
+  preview?: string;
+}
+
+export async function listRecentSessions(
+  sessionsDir: string,
+  limit: number
+): Promise<SessionSummary[]> {
+  const filePaths = await collectSessionFiles(sessionsDir);
+  const summaries = await Promise.all(
+    filePaths.map(async (filePath) => {
+      const summary = await readSessionSummary(filePath);
+      return summary;
+    })
+  );
+
+  return summaries
+    .filter((item): item is SessionSummary => Boolean(item))
+    .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))
+    .slice(0, Math.max(1, limit));
+}
+
+export async function getSessionSummary(
+  sessionsDir: string,
+  sessionId: string
+): Promise<SessionSummary | undefined> {
+  const filePath = await findSessionFile(sessionsDir, sessionId);
+  if (!filePath) return undefined;
+  return readSessionSummary(filePath);
+}
+
+async function collectSessionFiles(root: string): Promise<string[]> {
+  const results: string[] = [];
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...(await collectSessionFiles(fullPath)));
+      continue;
+    }
+    if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+      results.push(fullPath);
+    }
+  }
+  return results;
+}
+
+async function readSessionSummary(filePath: string): Promise<SessionSummary | undefined> {
+  const raw = await fs.readFile(filePath, "utf8").catch(() => undefined);
+  if (!raw) return undefined;
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+  const firstLine = lines[0];
+  if (!firstLine) return undefined;
+
+  try {
+    const parsed = JSON.parse(firstLine) as {
+      payload?: { id?: string; timestamp?: string; cwd?: string };
+    };
+    const sessionId = parsed.payload?.id || sessionIdFromFilePath(filePath);
+    if (!sessionId) return undefined;
+    return {
+      sessionId,
+      filePath,
+      createdAt: parsed.payload?.timestamp,
+      cwd: parsed.payload?.cwd,
+      preview: extractSessionPreview(lines)
+    };
+  } catch {
+    const sessionId = sessionIdFromFilePath(filePath);
+    if (!sessionId) return undefined;
+    return { sessionId, filePath };
+  }
+}
+
+function sessionIdFromFilePath(filePath: string): string | undefined {
+  const match = path.basename(filePath).match(
+    /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
+  );
+  return match?.[1];
+}
+
+function extractSessionPreview(lines: string[]): string | undefined {
+  for (let idx = lines.length - 1; idx >= 0; idx -= 1) {
+    try {
+      const parsed = JSON.parse(lines[idx]) as {
+        type?: string;
+        payload?: {
+          type?: string;
+          message?: string;
+          role?: string;
+          content?: Array<{ type?: string; text?: string }>;
+        };
+      };
+      if (parsed.type === "event_msg" && parsed.payload?.type === "user_message") {
+        return compactPreview(parsed.payload.message);
+      }
+      if (parsed.type === "response_item" && parsed.payload?.type === "message" && parsed.payload.role === "user") {
+        const text = parsed.payload.content?.find((item) => item.type === "input_text")?.text;
+        const preview = compactPreview(text);
+        if (preview) return preview;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+function compactPreview(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (!compact) return undefined;
+  if (compact.length <= 72) return compact;
+  return `${compact.slice(0, 69).trimEnd()}...`;
+}

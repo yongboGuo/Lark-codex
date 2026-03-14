@@ -3,7 +3,7 @@ export type CodexSessionId = string;
 
 export interface SessionBinding {
   conversationKey: FeishuConversationKey;
-  codexSessionId: CodexSessionId;
+  codexSessionId?: CodexSessionId;
   workspace: string;
   createdAt: string;
   updatedAt: string;
@@ -14,7 +14,7 @@ export interface ActiveRun {
   codexSessionId: CodexSessionId;
   runId: string;
   startedAt: string;
-  status: "running" | "stopping";
+  status: "starting" | "running" | "stopping";
 }
 
 export interface IncomingMessage {
@@ -29,7 +29,8 @@ export interface IncomingMessage {
 
 export interface OutgoingMessage {
   chatId: string;
-  text: string;
+  text?: string;
+  card?: Record<string, unknown>;
   replyToMessageId?: string;
   threadId?: string;
 }

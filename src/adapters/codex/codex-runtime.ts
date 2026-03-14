@@ -4,25 +4,35 @@ import path from "node:path";
 import readline from "node:readline";
 import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
+import pty from "node-pty";
+import xterm from "@xterm/headless";
+import stripAnsi from "strip-ansi";
 import { AppConfig } from "../../config/env.js";
 import { IncomingMessage } from "../../types/domain.js";
-import { CodexBackend, CodexRunHandle, CodexTurnResult } from "./backend.js";
+import { CodexBackend, CodexRunHandle, CodexRunHooks, CodexTurnResult } from "./backend.js";
 import { findSessionFile } from "./session-files.js";
+import {
+  hasPrompt,
+  normalizeTerminalDelta,
+  renderTerminalForFeishu
+} from "./terminal-normalizer.js";
 
 interface ActiveProcess {
   child: ReturnType<typeof spawn>;
   cancelled: boolean;
   timeout?: NodeJS.Timeout;
+  heartbeat?: NodeJS.Timeout;
 }
 
 const CREATE_SESSION_PROMPT =
   "Initialize a new bridge session. Reply with exactly: READY";
 
 export function createCodexBackend(config: AppConfig["codex"]): CodexBackend {
-  if (config.backendMode === "tcl") {
-    return new TclCodexBackend(config);
+  const spawnBackend = new SpawnCodexBackend(config);
+  if (config.backendMode === "terminal") {
+    return new TerminalCodexBackend(config, spawnBackend);
   }
-  return new SpawnCodexBackend(config);
+  return spawnBackend;
 }
 
 class SpawnCodexBackend implements CodexBackend {
@@ -43,12 +53,14 @@ class SpawnCodexBackend implements CodexBackend {
   async runTurn(
     input: IncomingMessage,
     sessionId: string | undefined,
-    workspace: string
+    workspace: string,
+    hooks?: CodexRunHooks
   ): Promise<CodexRunHandle> {
     return this.executeTurn({
       prompt: input.text,
       workspace,
-      sessionId
+      sessionId,
+      hooks
     });
   }
 
@@ -75,6 +87,7 @@ class SpawnCodexBackend implements CodexBackend {
     prompt: string;
     workspace: string;
     sessionId?: string;
+    hooks?: CodexRunHooks;
   }): Promise<CodexRunHandle> {
     const runId = randomUUID();
     await ensureWorkspace(params.workspace);
@@ -104,6 +117,9 @@ class SpawnCodexBackend implements CodexBackend {
     });
 
     const active: ActiveProcess = { child, cancelled: false };
+    void params.hooks?.onStatus?.(
+      params.sessionId ? `resuming Codex session ${params.sessionId}...` : "starting a new Codex session..."
+    );
     if (this.config.runTimeoutMs > 0) {
       active.timeout = setTimeout(() => {
         active.cancelled = true;
@@ -116,6 +132,12 @@ class SpawnCodexBackend implements CodexBackend {
       }, this.config.runTimeoutMs);
       active.timeout.unref();
     }
+    if (this.config.spawnStatusIntervalMs > 0) {
+      active.heartbeat = setInterval(() => {
+        void params.hooks?.onStatus?.(`Codex is still working...\nrun=${runId}`);
+      }, this.config.spawnStatusIntervalMs);
+      active.heartbeat.unref();
+    }
     this.activeRuns.set(runId, active);
 
     const done = new Promise<CodexTurnResult>((resolve, reject) => {
@@ -123,11 +145,13 @@ class SpawnCodexBackend implements CodexBackend {
       let finalOutput = "";
       let stderr = "";
       let settled = false;
+      let lastStreamedOutput = "";
 
       const finish = (fn: () => void): void => {
         if (settled) return;
         settled = true;
         if (active.timeout) clearTimeout(active.timeout);
+        if (active.heartbeat) clearInterval(active.heartbeat);
         this.activeRuns.delete(runId);
         fn();
       };
@@ -142,9 +166,18 @@ class SpawnCodexBackend implements CodexBackend {
           return;
         }
 
+        if (event.type === "turn.started") {
+          void params.hooks?.onStatus?.("Codex is thinking...");
+          return;
+        }
+
         if (event.type === "item.completed" && event.item?.type === "agent_message") {
           if (typeof event.item.text === "string") {
             finalOutput = event.item.text;
+            if (event.item.text !== lastStreamedOutput) {
+              lastStreamedOutput = event.item.text;
+              void params.hooks?.onUpdate?.(event.item.text);
+            }
           }
         }
       });
@@ -152,6 +185,9 @@ class SpawnCodexBackend implements CodexBackend {
       const stderrLines = readline.createInterface({ input: child.stderr as Readable });
       stderrLines.on("line", (line) => {
         stderr += `${line}\n`;
+        if (line.includes("failed to connect to websocket")) {
+          void params.hooks?.onStatus?.("Codex upstream websocket failed, retrying...");
+        }
       });
 
       child.on("error", (error) => {
@@ -207,30 +243,43 @@ class SpawnCodexBackend implements CodexBackend {
   }
 }
 
-class TclCodexBackend implements CodexBackend {
-  readonly mode = "tcl" as const;
+class TerminalCodexBackend implements CodexBackend {
+  readonly mode = "terminal" as const;
+  private readonly terminals = new Map<string, TerminalSession>();
 
-  constructor(private readonly config: AppConfig["codex"]) {
-    void this.config;
-  }
+  constructor(
+    private readonly config: AppConfig["codex"],
+    private readonly spawnBackend: SpawnCodexBackend
+  ) {}
 
-  async createSession(_workspace: string): Promise<string> {
-    throw new Error(
-      "CODEX_BACKEND_MODE=tcl is not implemented safely yet. The current Codex interactive CLI is a full-screen TUI without a stable machine protocol. Use CODEX_BACKEND_MODE=spawn."
-    );
+  async createSession(workspace: string): Promise<string> {
+    return this.spawnBackend.createSession(workspace);
   }
 
   async runTurn(
-    _input: IncomingMessage,
-    _sessionId: string | undefined,
-    _workspace: string
+    input: IncomingMessage,
+    sessionId: string | undefined,
+    workspace: string,
+    hooks?: CodexRunHooks
   ): Promise<CodexRunHandle> {
-    throw new Error(
-      "CODEX_BACKEND_MODE=tcl is not implemented safely yet. Use CODEX_BACKEND_MODE=spawn."
-    );
+    const resolvedSessionId = sessionId || (await this.createSession(workspace));
+    const runId = randomUUID();
+    const done = (async () => {
+      await hooks?.onStatus?.("starting terminal session...");
+      const terminal = await this.getOrCreateTerminal(resolvedSessionId, workspace);
+      const handle = terminal.runTurn(input.text, runId, hooks);
+      return handle.done;
+    })();
+    return { runId, done };
   }
 
-  async stop(_runId: string): Promise<boolean> {
+  async stop(runId: string): Promise<boolean> {
+    for (const terminal of this.terminals.values()) {
+      if (terminal.currentRunId === runId) {
+        await terminal.stop();
+        return true;
+      }
+    }
     return false;
   }
 
@@ -238,6 +287,282 @@ class TclCodexBackend implements CodexBackend {
     const filePath = await findSessionFile(this.config.sessionsDir, sessionId);
     return filePath !== undefined;
   }
+
+  private async getOrCreateTerminal(sessionId: string, workspace: string): Promise<TerminalSession> {
+    const existing = this.terminals.get(sessionId);
+    if (existing && existing.isAlive()) {
+      await existing.ready();
+      return existing;
+    }
+    if (existing) {
+      this.terminals.delete(sessionId);
+    }
+
+    const terminal = new TerminalSession({
+      codex: this.config,
+      sessionId,
+      workspace
+    });
+    this.terminals.set(sessionId, terminal);
+    try {
+      await terminal.ready();
+      return terminal;
+    } catch (error) {
+      this.terminals.delete(sessionId);
+      throw error;
+    }
+  }
+}
+
+interface TerminalSessionOptions {
+  codex: AppConfig["codex"];
+  sessionId: string;
+  workspace: string;
+}
+
+class TerminalSession {
+  readonly sessionId: string;
+  readonly workspace: string;
+  currentRunId?: string;
+
+  private readonly ptyProcess: pty.IPty;
+  private readonly emulator: InstanceType<typeof xterm.Terminal>;
+  private rawBuffer = "";
+  private alive = true;
+  private startupDone = false;
+  private startupPromise: Promise<void>;
+  private startupResolve!: () => void;
+  private startupReject!: (error: Error) => void;
+  private pending?: PendingTerminalRun;
+  private startupChunkCount = 0;
+
+  constructor(private readonly options: TerminalSessionOptions) {
+    this.sessionId = options.sessionId;
+    this.workspace = options.workspace;
+
+    this.startupPromise = new Promise<void>((resolve, reject) => {
+      this.startupResolve = resolve;
+      this.startupReject = reject;
+    });
+
+    const args = ["--no-alt-screen", "--cd", this.workspace];
+    if (this.options.codex.sandboxMode === "danger-full-access") {
+      args.push("--dangerously-bypass-approvals-and-sandbox");
+    } else {
+      args.push("--full-auto");
+    }
+    args.push("resume", this.sessionId);
+
+    this.ptyProcess = pty.spawn(this.options.codex.bin, args, {
+      name: "xterm-256color",
+      cols: 100,
+      rows: 28,
+      cwd: this.workspace,
+      env: {
+        ...process.env,
+        CODEX_HOME: this.options.codex.home,
+        HOME: process.env.HOME || path.dirname(this.options.codex.home)
+      }
+    });
+    this.emulator = new xterm.Terminal({
+      cols: 100,
+      rows: 28,
+      allowProposedApi: true
+    });
+    this.emulator.onData((data) => {
+      this.ptyProcess.write(data);
+    });
+
+    this.ptyProcess.onData((chunk) => {
+      this.emulator.write(chunk);
+      this.rawBuffer += chunk;
+      this.startupChunkCount += 1;
+
+      if (!this.startupDone && this.promptVisible()) {
+        this.startupDone = true;
+        this.logStartupDebug("ready");
+        this.startupResolve();
+      }
+
+      if (this.pending) {
+        if (this.pending.idleTimer) clearTimeout(this.pending.idleTimer);
+        this.pending.idleTimer = setTimeout(
+          () => this.tryResolvePending(),
+          this.options.codex.terminalFlushIdleMs
+        );
+      }
+    });
+
+    this.ptyProcess.onExit(({ exitCode, signal }) => {
+      this.alive = false;
+      const error = new Error(
+        `Terminal Codex session exited (code=${exitCode}, signal=${signal}) for session ${this.sessionId}`
+      );
+      if (!this.startupDone) {
+        this.startupReject(error);
+      }
+      if (this.pending) {
+        const pending = this.pending;
+        this.pending = undefined;
+        if (pending.idleTimer) clearTimeout(pending.idleTimer);
+        pending.reject(error);
+      }
+    });
+
+    setTimeout(() => {
+      if (!this.startupDone) {
+        this.logStartupDebug("timeout");
+        this.startupReject(
+          new Error(`Timed out waiting for interactive Codex terminal startup: ${this.sessionId}`)
+        );
+      }
+    }, this.options.codex.terminalStartupTimeoutMs).unref();
+  }
+
+  isAlive(): boolean {
+    return this.alive;
+  }
+
+  async ready(): Promise<void> {
+    await this.startupPromise;
+  }
+
+  runTurn(prompt: string, runId: string, hooks?: CodexRunHooks): CodexRunHandle {
+    if (this.pending) {
+      throw new Error(`Terminal session ${this.sessionId} is already busy.`);
+    }
+
+    this.currentRunId = runId;
+    const marker = this.rawBuffer.length;
+    const baselineScreen = this.visibleScreenText();
+
+    const done = new Promise<CodexTurnResult>((resolve, reject) => {
+      this.pending = {
+        runId,
+        prompt,
+        marker,
+        baselineScreen,
+        hooks,
+        lastOutput: "",
+        resolve: (result) => {
+          this.currentRunId = undefined;
+          resolve(result);
+        },
+        reject: (error) => {
+          this.currentRunId = undefined;
+          reject(error);
+        }
+      };
+      // Clear any draft text or suggested slash command left in the input line.
+      this.ptyProcess.write("\u0015");
+      this.ptyProcess.write(prompt);
+      this.ptyProcess.write("\r\n");
+    });
+
+    return { runId, done };
+  }
+
+  async stop(): Promise<void> {
+    if (this.pending) {
+      const pending = this.pending;
+      this.pending = undefined;
+      if (pending.idleTimer) clearTimeout(pending.idleTimer);
+      this.ptyProcess.write("\u0003");
+      pending.resolve({
+        runId: pending.runId,
+        sessionId: this.sessionId,
+        output: formatTerminalOutput("Run cancelled.", this.options.codex.terminalRenderMode),
+        status: "cancelled"
+      });
+    }
+    this.ptyProcess.kill();
+    this.emulator.dispose();
+    this.alive = false;
+  }
+
+  private tryResolvePending(): void {
+    if (!this.pending) return;
+    const pending = this.pending;
+    const rawDelta = this.rawBuffer.slice(pending.marker);
+    const deltaSnapshot = normalizeTerminalDelta(rawDelta, pending.prompt);
+    const screenDelta = stripScreenPrefix(this.visibleScreenText(), pending.baselineScreen);
+    const screenSnapshot = normalizeTerminalDelta(screenDelta, pending.prompt);
+    const snapshot = deltaSnapshot.cleaned ? deltaSnapshot : screenSnapshot.cleaned ? screenSnapshot : deltaSnapshot;
+    if (!snapshot.cleaned) return;
+    const rendered = limitTerminalOutput(
+      renderTerminalForFeishu(snapshot, this.options.codex.terminalRenderMode),
+      this.options.codex.terminalFlushMaxChars
+    );
+
+    if (rendered !== pending.lastOutput) {
+      pending.lastOutput = rendered;
+      void pending.hooks?.onUpdate?.(rendered);
+    }
+
+    if (!snapshot.hasPrompt && !this.promptVisible()) return;
+
+    this.pending = undefined;
+    if (pending.idleTimer) clearTimeout(pending.idleTimer);
+    pending.resolve({
+      runId: pending.runId,
+      sessionId: this.sessionId,
+      output: rendered,
+      status: "completed"
+    });
+  }
+
+  private cleanedTail(): string {
+    return simplifyTerminalBytes(this.rawBuffer.slice(-8000));
+  }
+
+  private visibleScreenText(): string {
+    const lines: string[] = [];
+    const buffer = this.emulator.buffer.active;
+    const total = Math.min(this.emulator.rows + 20, buffer.length);
+    const start = Math.max(0, buffer.length - total);
+    for (let y = start; y < buffer.length; y++) {
+      lines.push(buffer.getLine(y)?.translateToString(true) ?? "");
+    }
+    return lines.join("\n");
+  }
+
+  private promptVisible(): boolean {
+    return hasPrompt(this.visibleScreenText()) || hasPrompt(this.cleanedTail());
+  }
+
+  private logStartupDebug(reason: "ready" | "timeout"): void {
+    const visible = this.visibleScreenText().trim();
+    const cleanedTail = normalizeWhitespaceForLog(this.cleanedTail());
+    const rawTail = escapeControlForLog(this.rawBuffer.slice(-4000));
+    const rawHead = escapeControlForLog(this.rawBuffer.slice(0, 1200));
+
+    console.warn("terminal startup debug", {
+      reason,
+      sessionId: this.sessionId,
+      workspace: this.workspace,
+      startupDone: this.startupDone,
+      startupChunkCount: this.startupChunkCount,
+      rawBytes: this.rawBuffer.length,
+      hasPromptInCleanedTail: hasPrompt(this.cleanedTail()),
+      hasPromptInVisibleScreen: hasPrompt(this.visibleScreenText()),
+      cleanedTail,
+      visibleScreen: visible || "(empty)",
+      rawHead,
+      rawTail
+    });
+  }
+}
+
+interface PendingTerminalRun {
+  runId: string;
+  prompt: string;
+  marker: number;
+  baselineScreen: string;
+  idleTimer?: NodeJS.Timeout;
+  hooks?: CodexRunHooks;
+  lastOutput: string;
+  resolve: (result: CodexTurnResult) => void;
+  reject: (error: Error) => void;
 }
 
 async function ensureWorkspace(workspace: string): Promise<void> {
@@ -253,4 +578,45 @@ function parseJsonLine(line: string): Record<string, any> | undefined {
   } catch {
     return undefined;
   }
+}
+
+function formatTerminalOutput(text: string, mode: "markdown" | "plain"): string {
+  if (mode === "plain") return text || "(no clean terminal output)";
+  return ["**Codex Terminal**", "```text", text || "(no clean terminal output)", "```"].join("\n");
+}
+
+function limitTerminalOutput(text: string, maxChars: number): string {
+  if (maxChars <= 0 || text.length <= maxChars) return text;
+  const suffix = "\n\n[terminal output truncated]";
+  const budget = Math.max(0, maxChars - suffix.length);
+  return `${text.slice(0, budget).trimEnd()}${suffix}`;
+}
+
+function normalizeWhitespaceForLog(text: string): string {
+  return text.replace(/\r/g, "\\r").replace(/\n/g, "\\n\n").trim();
+}
+
+function escapeControlForLog(text: string): string {
+  return text
+    .replace(/\u001b/g, "\\u001b")
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n\n");
+}
+
+function simplifyTerminalBytes(text: string): string {
+  return stripAnsi(text)
+    .replace(/\u001b\][^\u0007]*(\u0007|\u001b\\)/g, "")
+    .replace(/\r/g, "\n")
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
+function stripScreenPrefix(current: string, baseline: string): string {
+  const currentLines = current.split("\n");
+  const baselineLines = baseline.split("\n");
+  let idx = 0;
+  while (idx < currentLines.length && idx < baselineLines.length && currentLines[idx] === baselineLines[idx]) {
+    idx += 1;
+  }
+  return currentLines.slice(idx).join("\n");
 }

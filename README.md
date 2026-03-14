@@ -39,8 +39,10 @@ Thin Feishu-native relay for Codex native sessions.
 - `/status`
 - `/new`
 - `/resume`
+- `/sessions`
 - `/stop`
 - `/workspace`
+- `/approvals`
 
 ## Status
 
@@ -49,8 +51,10 @@ Working v1 bridge:
 - Feishu long-connection receive/send
 - DM text in / text out
 - conversation to native Codex session binding
-- `/help` `/status` `/new` `/resume <session-id>` `/stop` `/workspace`
-- backend modes: `spawn` now, `tcl` reserved as experimental
+- `/help` `/status` `/new` `/resume <session-id>` `/sessions [n]` `/stop` `/workspace` `/approvals`
+- `/workspace <path>` to rebind a conversation to another directory under `WORKSPACE_ROOT`
+- `/approvals auto|full-access` to switch the Codex sandbox mode used for future runs
+- backend modes: `spawn` now, `terminal` reserved as experimental
 
 ## Run
 
@@ -58,14 +62,52 @@ Working v1 bridge:
 2. Install dependencies with `npm install`.
 3. Start the bridge with `npm run dev`.
 
+For a full local install from the current checkout, including package install, build, user unit install, and hard restart:
+
+```bash
+./install.sh
+```
+
+## User Service
+
+- Repo-owned systemd template: `deploy/systemd/codex-feishu-bridge.service.in`
+- User config templates: `deploy/config/bridge.env.example` and `deploy/config/config.json`
+- Install or update the user service:
+
+```bash
+./scripts/install-user-unit.sh
+```
+
+- The installer renders the current checkout path into the unit, writes the unit to:
+  `~/.config/systemd/user/codex-feishu-bridge.service`
+- It preserves existing `~/.config/codex-feishu-bridge/bridge.env` and `config.json` if they
+  already exist.
+- The installer asks for confirmation, then installs or updates the unit, reloads user systemd,
+  enables the service, and performs a hard restart.
+
+For local testing without Feishu, run `npm run cli -- --chat-id test-terminal`. This uses the same binding logic as Feishu `p2p:<chat_id>` conversations, so the chosen `chatId` becomes the reusable bridge conversation key.
+
 ## Backend Mode
 
 - `CODEX_BACKEND_MODE=spawn` is the supported mode. Each turn spawns `codex exec` or `codex exec resume`, while the bridge persists the native session id.
-- `CODEX_BACKEND_MODE=tcl` is intentionally blocked for now. The current Codex interactive CLI is a full-screen TUI without a stable machine protocol, so PTY automation is too brittle to treat as production-safe.
+- `spawn` now emits lightweight progress updates such as session start, thinking, long-run heartbeat, and upstream websocket retry notices when Codex exposes them.
+- `CODEX_BACKEND_MODE=terminal` is experimental. It is intended for a terminal-derived Codex experience projected into Feishu, but the current Codex interactive CLI is still a full-screen TUI and not yet reliable enough to use as the default backend.
+- `CODEX_SANDBOX_MODE=workspace-write` maps to Codex `--full-auto`.
+- `CODEX_SANDBOX_MODE=danger-full-access` maps to Codex `--dangerously-bypass-approvals-and-sandbox`.
 - `CODEX_RUN_TIMEOUT_MS` controls the maximum lifetime of one active Codex run before the bridge terminates it.
+- `SPAWN_STATUS_INTERVAL_MS` controls the heartbeat interval for long-running `spawn` turns. Set it to `0` to disable heartbeats.
+- `TERMINAL_FLUSH_IDLE_MS` controls the quiet window before terminal output is projected back to Feishu as one reply.
+- `TERMINAL_FLUSH_MAX_CHARS` caps one terminal-mode Feishu reply so noisy screens do not flood the chat.
 
 ## Codex Profile Mode
 
 - `CODEX_PROFILE_MODE=isolated` gives the bridge its own Codex home. This is the default in development and is the safest mode for testing.
 - `CODEX_PROFILE_MODE=personal` points the bridge at your personal `~/.codex` so Feishu and your local terminal can reuse the same Codex sessions.
 - `personal + spawn` is currently a compatibility mode, not the safest one. It may interfere with an interactive Codex instance that is already running against the same home.
+
+## Session Binding
+
+- Feishu does not provide a native Codex session id. The bridge binds a Feishu conversation key to a Codex session id in its local store.
+- `p2p` chats bind on `p2p:<chat_id>`.
+- If a conversation already has a bound session, the bridge reuses it.
+- If a run is already active for that conversation, the bridge rejects a second concurrent turn instead of guessing which live run to reuse.

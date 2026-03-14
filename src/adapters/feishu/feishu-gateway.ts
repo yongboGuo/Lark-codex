@@ -3,6 +3,7 @@ import { AppConfig } from "../../config/env.js";
 import { IncomingMessage, OutgoingMessage } from "../../types/domain.js";
 
 type MessageHandler = (message: IncomingMessage) => Promise<void>;
+const FEISHU_TEXT_SOFT_LIMIT = 4000;
 
 export class FeishuGateway {
   private readonly client: Lark.Client;
@@ -44,16 +45,19 @@ export class FeishuGateway {
   }
 
   async send(message: OutgoingMessage): Promise<void> {
-    await this.client.im.v1.message.create({
-      params: {
-        receive_id_type: "chat_id"
-      },
-      data: {
-        receive_id: message.chatId,
-        msg_type: "text",
-        content: JSON.stringify({ text: message.text })
-      }
-    });
+    const text = message.text || "";
+    for (const chunk of splitMessageText(text, FEISHU_TEXT_SOFT_LIMIT)) {
+      await this.client.im.v1.message.create({
+        params: {
+          receive_id_type: "chat_id"
+        },
+        data: {
+          receive_id: message.chatId,
+          msg_type: "text",
+          content: JSON.stringify({ text: chunk })
+        }
+      });
+    }
   }
 
   exampleIncoming(text: string): IncomingMessage {
@@ -107,4 +111,29 @@ function parseJson(value: string): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
+}
+
+function splitMessageText(text: string, maxChars: number): string[] {
+  if (maxChars <= 0 || text.length <= maxChars) return [text];
+
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > maxChars) {
+    const splitAt = pickSplitPoint(remaining, maxChars);
+    chunks.push(remaining.slice(0, splitAt).trimEnd());
+    remaining = remaining.slice(splitAt).trimStart();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks.length > 0 ? chunks : [text];
+}
+
+function pickSplitPoint(text: string, maxChars: number): number {
+  const slice = text.slice(0, maxChars);
+  const paragraph = slice.lastIndexOf("\n\n");
+  if (paragraph >= Math.floor(maxChars * 0.5)) return paragraph + 2;
+  const line = slice.lastIndexOf("\n");
+  if (line >= Math.floor(maxChars * 0.5)) return line + 1;
+  const space = slice.lastIndexOf(" ");
+  if (space >= Math.floor(maxChars * 0.5)) return space + 1;
+  return maxChars;
 }

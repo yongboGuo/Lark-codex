@@ -1,0 +1,26 @@
+[Unit]
+Description=Codex Feishu Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@WORKDIR@
+EnvironmentFile=%h/.config/codex-feishu-bridge/bridge.env
+Environment=HOME=@HOME@
+Environment=TMPDIR=/tmp
+Environment=HTTP_PROXY=http://127.0.0.1:7897/
+Environment=HTTPS_PROXY=http://127.0.0.1:7897/
+Environment=NO_PROXY=localhost,127.0.0.1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.29.0.0/16,::1,mirrors.aliyun.com,splashtop.cn,splashtop.com,todesk.com,tsinghua.edu.cn,trae.cn,feishu.cn
+Environment=http_proxy=http://127.0.0.1:7897/
+Environment=https_proxy=http://127.0.0.1:7897/
+Environment=no_proxy=localhost,127.0.0.1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.29.0.0/16,::1,mirrors.aliyun.com,splashtop.cn,splashtop.com,todesk.com,tsinghua.edu.cn,trae.cn,feishu.cn
+Environment=NODE_EXTRA_CA_CERTS=/volumes/data/openclaw/ssl/openclaw.crt
+Environment=PATH=@PATH@
+ExecStart=@NODE_BIN@ --enable-source-maps @WORKDIR@/dist/index.js
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -32,9 +32,14 @@ export interface AppConfig {
     home: string;
     sessionsDir: string;
     profileMode: "isolated" | "personal";
-    backendMode: "spawn" | "tcl";
+    backendMode: "spawn" | "terminal";
     sandboxMode: "workspace-write" | "danger-full-access";
     runTimeoutMs: number;
+    spawnStatusIntervalMs: number;
+    terminalRenderMode: "markdown" | "plain";
+    terminalFlushIdleMs: number;
+    terminalFlushMaxChars: number;
+    terminalStartupTimeoutMs: number;
   };
   workspace: {
     root: string;
@@ -84,12 +89,18 @@ export function loadConfig(): AppConfig {
       home: readSetting("CODEX_HOME", defaultCodexHome, jsonConfig),
       sessionsDir: readSetting("CODEX_SESSIONS_DIR", path.join(defaultCodexHome, "sessions"), jsonConfig),
       profileMode: codexProfileMode,
-      backendMode: codexBackendMode === "tcl" ? "tcl" : "spawn",
+      backendMode: codexBackendMode === "terminal" ? "terminal" : "spawn",
       sandboxMode:
         readSetting("CODEX_SANDBOX_MODE", "workspace-write", jsonConfig) === "danger-full-access"
           ? "danger-full-access"
           : "workspace-write",
-      runTimeoutMs: Number(readSetting("CODEX_RUN_TIMEOUT_MS", "600000", jsonConfig))
+      runTimeoutMs: Number(readSetting("CODEX_RUN_TIMEOUT_MS", "600000", jsonConfig)),
+      spawnStatusIntervalMs: Number(readSetting("SPAWN_STATUS_INTERVAL_MS", "15000", jsonConfig)),
+      terminalRenderMode:
+        readSetting("TERMINAL_RENDER_MODE", "markdown", jsonConfig) === "plain" ? "plain" : "markdown",
+      terminalFlushIdleMs: Number(readSetting("TERMINAL_FLUSH_IDLE_MS", "3000", jsonConfig)),
+      terminalFlushMaxChars: Number(readSetting("TERMINAL_FLUSH_MAX_CHARS", "4000", jsonConfig)),
+      terminalStartupTimeoutMs: Number(readSetting("TERMINAL_STARTUP_TIMEOUT_MS", "30000", jsonConfig))
     },
     workspace: {
       root: workspaceRoot,

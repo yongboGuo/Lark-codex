@@ -12,13 +12,19 @@ export interface CodexRunHandle {
   done: Promise<CodexTurnResult>;
 }
 
+export interface CodexRunHooks {
+  onStatus?: (text: string) => Promise<void> | void;
+  onUpdate?: (text: string) => Promise<void> | void;
+}
+
 export interface CodexBackend {
-  readonly mode: "spawn" | "tcl";
+  readonly mode: "spawn" | "terminal";
   createSession(workspace: string): Promise<string>;
   runTurn(
     input: IncomingMessage,
     sessionId: string | undefined,
-    workspace: string
+    workspace: string,
+    hooks?: CodexRunHooks
   ): Promise<CodexRunHandle>;
   stop(runId: string): Promise<boolean>;
   getSession(sessionId: string): Promise<boolean>;

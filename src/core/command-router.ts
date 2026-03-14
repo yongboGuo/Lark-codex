@@ -1,6 +1,14 @@
 import { IncomingMessage } from "../types/domain.js";
 
-export type CommandName = "help" | "status" | "new" | "resume" | "stop" | "workspace";
+export type CommandName =
+  | "help"
+  | "status"
+  | "new"
+  | "resume"
+  | "sessions"
+  | "stop"
+  | "workspace"
+  | "approvals";
 
 export interface ParsedCommand {
   name: CommandName;
@@ -11,7 +19,7 @@ export function parseCommand(message: IncomingMessage): ParsedCommand | undefine
   const text = message.text.trim();
   if (!text.startsWith("/")) return undefined;
   const [head, ...args] = text.slice(1).split(/\s+/);
-  if (["help", "status", "new", "resume", "stop", "workspace"].includes(head)) {
+  if (["help", "status", "new", "resume", "sessions", "stop", "workspace", "approvals"].includes(head)) {
     return { name: head as CommandName, args };
   }
   return undefined;

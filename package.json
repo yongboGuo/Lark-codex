@@ -6,16 +6,22 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "cli": "tsx src/index.ts --cli",
     "start": "node --enable-source-maps dist/index.js",
     "build": "tsc -p tsconfig.json",
-    "check": "tsc --noEmit -p tsconfig.json"
+    "check": "tsc --noEmit -p tsconfig.json",
+    "service:install": "./scripts/install-user-unit.sh"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.59.0",
-    "dotenv": "^16.6.1"
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/headless": "^6.0.0",
+    "dotenv": "^16.6.1",
+    "node-pty": "^1.1.0",
+    "strip-ansi": "^7.2.0"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
