@@ -36,12 +36,13 @@ export interface AppConfig {
     home: string;
     sessionsDir: string;
     profileMode: "isolated" | "personal";
-    backendMode: "spawn" | "terminal";
+    backendMode: "spawn" | "terminal" | "app-server";
     sandboxMode: "workspace-write" | "danger-full-access";
     sessionListDefaultCount: number;
     sessionAllDefaultCount: number;
     runTimeoutMs: number;
     spawnStatusIntervalMs: number;
+    statusIncludeProject: boolean;
     terminalRenderMode: "markdown" | "plain";
     terminalFlushIdleMs: number;
     terminalFlushMaxChars: number;
@@ -50,6 +51,7 @@ export interface AppConfig {
   project: {
     allowedRoots: string[];
     defaultProject: string;
+    defaultSearchEnabled: boolean;
   };
   storePath: string;
 }
@@ -111,7 +113,12 @@ export function loadConfig(): AppConfig {
       home: readSetting("CODEX_HOME", defaultCodexHome, jsonConfig),
       sessionsDir: readSetting("CODEX_SESSIONS_DIR", path.join(defaultCodexHome, "sessions"), jsonConfig),
       profileMode: codexProfileMode,
-      backendMode: codexBackendMode === "terminal" ? "terminal" : "spawn",
+      backendMode:
+        codexBackendMode === "terminal"
+          ? "terminal"
+          : codexBackendMode === "app-server"
+            ? "app-server"
+            : "spawn",
       sandboxMode:
         readSetting("CODEX_SANDBOX_MODE", "workspace-write", jsonConfig) === "danger-full-access"
           ? "danger-full-access"
@@ -132,6 +139,7 @@ export function loadConfig(): AppConfig {
       spawnStatusIntervalMs: readIntegerSetting("SPAWN_STATUS_INTERVAL_MS", "15000", jsonConfig, {
         min: 0
       }),
+      statusIncludeProject: readBooleanSetting("STATUS_INCLUDE_PROJECT", true, jsonConfig),
       terminalRenderMode:
         readSetting("TERMINAL_RENDER_MODE", "markdown", jsonConfig) === "plain" ? "plain" : "markdown",
       terminalFlushIdleMs: readIntegerSetting("TERMINAL_FLUSH_IDLE_MS", "3000", jsonConfig, { min: 0 }),
@@ -147,7 +155,8 @@ export function loadConfig(): AppConfig {
     },
     project: {
       allowedRoots: projectAllowedRoots,
-      defaultProject
+      defaultProject,
+      defaultSearchEnabled: readBooleanSetting("DEFAULT_SEARCH_ENABLED", false, jsonConfig)
     },
     storePath: readSetting("STORE_PATH", ".data/bindings.json", jsonConfig)
   };
@@ -204,6 +213,28 @@ function loadJsonConfig(configPath?: string): JsonConfigShape | undefined {
   const parsed = JSON.parse(raw) as JsonConfigShape;
   parsed.__path = resolved;
   return parsed;
+}
+
+function readBooleanSetting(
+  name: string,
+  fallback: boolean,
+  jsonConfig: JsonConfigShape | undefined
+): boolean {
+  const envValue = process.env[name];
+  if (envValue) return parseBooleanSetting(name, envValue);
+  const jsonValue = jsonConfig?.[name];
+  if (typeof jsonValue === "boolean") return jsonValue;
+  if (typeof jsonValue === "string" && jsonValue.trim()) {
+    return parseBooleanSetting(name, jsonValue);
+  }
+  return fallback;
+}
+
+function parseBooleanSetting(name: string, raw: string): boolean {
+  const normalized = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  throw new Error(`${name} must be a boolean: ${JSON.stringify(raw)}`);
 }
 
 function parseRootsSetting(raw: string, primaryRoot: string): string[] {

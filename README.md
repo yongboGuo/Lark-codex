@@ -54,7 +54,7 @@ Working v1 bridge:
 - `/help` `/status` `/new` `/resume <session-id>` `/sessions list` `/stop` `/project` `/approvals`
 - `/project <path>` to rebind a conversation to another directory under `PROJECT_ALLOWED_ROOTS`
 - `/approvals auto|full-access` to switch the Codex sandbox mode used for future runs
-- backend modes: `spawn` now, `terminal` reserved as experimental
+- backend modes: `spawn` now, `app-server` and `terminal` reserved as experimental
 
 ## Run
 
@@ -92,6 +92,7 @@ npm run install:local
   `~/.config/codex-feishu-bridge/bridge.env`, not in the repo-owned systemd unit template.
 - Project access is controlled by `PROJECT_ALLOWED_ROOTS`. `DEFAULT_PROJECT` must stay under
   one of those allowed roots.
+- `DEFAULT_SEARCH_ENABLED=true` makes new conversations and `/new` sessions default to live web search enabled.
 - On a fresh install, `~/.config/codex-feishu-bridge/config.json` defaults
   `CODEX_SANDBOX_MODE` to `danger-full-access`. Change that file if you want
   `workspace-write` instead.
@@ -104,6 +105,7 @@ For local testing without Feishu, run `npm run cli -- --chat-id test-terminal`. 
 
 - `CODEX_BACKEND_MODE=spawn` is the supported mode. Each turn spawns `codex exec` or `codex exec resume`, while the bridge persists the native session id.
 - `spawn` now emits lightweight progress updates such as session start, thinking, long-run heartbeat, and upstream websocket retry notices when Codex exposes them.
+- `CODEX_BACKEND_MODE=app-server` is experimental. It keeps a local `codex app-server` subprocess per bound native session and talks to it over stdio JSON-RPC for `thread/start`, `thread/resume`, `turn/start`, and `turn/interrupt`.
 - `CODEX_BACKEND_MODE=terminal` is experimental. It is intended for a terminal-derived Codex experience projected into Feishu, but the current Codex interactive CLI is still a full-screen TUI and not yet reliable enough to use as the default backend.
 - `CODEX_SANDBOX_MODE=workspace-write` maps to Codex `--full-auto`.
 - `CODEX_SANDBOX_MODE=danger-full-access` maps to Codex `--dangerously-bypass-approvals-and-sandbox`.

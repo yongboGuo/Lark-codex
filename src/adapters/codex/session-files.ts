@@ -36,9 +36,15 @@ export interface SessionSummary {
   preview?: string;
 }
 
+export interface SessionListOptions {
+  cwd?: string;
+  includeUnknownCwd?: boolean;
+}
+
 export async function listRecentSessions(
   sessionsDir: string,
-  limit: number
+  limit: number,
+  options?: SessionListOptions
 ): Promise<SessionSummary[]> {
   const filePaths = await collectSessionFiles(sessionsDir);
   const summaries = await Promise.all(
@@ -50,6 +56,11 @@ export async function listRecentSessions(
 
   return summaries
     .filter((item): item is SessionSummary => Boolean(item))
+    .filter((item) => {
+      if (!options?.cwd) return true;
+      if (item.cwd === options.cwd) return true;
+      return options.includeUnknownCwd === true && !item.cwd;
+    })
     .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))
     .slice(0, Math.max(1, limit));
 }

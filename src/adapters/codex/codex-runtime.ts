@@ -16,6 +16,7 @@ import {
   CodexTurnOptions,
   CodexTurnResult
 } from "./backend.js";
+import { AppServerSessionClient } from "./app-server-client.js";
 import { findSessionFile } from "./session-files.js";
 import {
   hasPrompt,
@@ -33,13 +34,342 @@ interface ActiveProcess {
 const CREATE_SESSION_PROMPT =
   "Initialize a new bridge session. Reply with exactly: READY";
 const STREAMED_OUTPUT_DEDUPE_WINDOW = 4;
+const APP_SERVER_CLIENT_IDLE_SHUTDOWN_MS = 60_000;
+
+function formatStatusWithProject(
+  config: AppConfig["codex"],
+  project: string,
+  text: string
+): string {
+  if (!config.statusIncludeProject) {
+    return text;
+  }
+  return `${text} (project: ${project})`;
+}
 
 export function createCodexBackend(config: AppConfig["codex"]): CodexBackend {
   const spawnBackend = new SpawnCodexBackend(config);
+  if (config.backendMode === "app-server") {
+    return new AppServerCodexBackend(config, spawnBackend);
+  }
   if (config.backendMode === "terminal") {
     return new TerminalCodexBackend(config, spawnBackend);
   }
   return spawnBackend;
+}
+
+interface ActiveAppServerRun {
+  client: AppServerSessionClient;
+  sessionId: string;
+  turnId?: string;
+  cancelled: boolean;
+  timeout?: NodeJS.Timeout;
+  heartbeat?: NodeJS.Timeout;
+}
+
+class AppServerCodexBackend implements CodexBackend {
+  readonly mode = "app-server" as const;
+  private readonly clients = new Map<string, AppServerSessionClient>();
+  private readonly activeRuns = new Map<string, ActiveAppServerRun>();
+  private readonly idleShutdowns = new Map<string, NodeJS.Timeout>();
+
+  constructor(
+    private readonly config: AppConfig["codex"],
+    private readonly bootstrapBackend: SpawnCodexBackend
+  ) {}
+
+  async createSession(project: string, options?: CodexTurnOptions): Promise<string> {
+    return this.bootstrapBackend.createSession(project, this.bootstrapOptions(options));
+  }
+
+  async runTurn(
+    input: IncomingMessage,
+    sessionId: string | undefined,
+    project: string,
+    options?: CodexTurnOptions,
+    hooks?: CodexRunHooks
+  ): Promise<CodexRunHandle> {
+    await ensureProject(project);
+    const runId = randomUUID();
+    const clientInfo = await this.getOrCreateClient(project, sessionId, options);
+    const resolvedSessionId = clientInfo.sessionId;
+    let lastActivityAt = Date.now();
+
+    const sendStatus = (text: string): void => {
+      lastActivityAt = Date.now();
+      void hooks?.onStatus?.(text);
+    };
+
+    const sendUpdate = (text: string): void => {
+      lastActivityAt = Date.now();
+      void hooks?.onUpdate?.(text);
+    };
+
+    sendStatus(
+      formatStatusWithProject(
+        this.config,
+        project,
+        sessionId ? `resuming Codex session ${resolvedSessionId}...` : "starting a new Codex session..."
+      )
+    );
+
+    const active: ActiveAppServerRun = {
+      client: clientInfo.client,
+      sessionId: resolvedSessionId,
+      cancelled: false
+    };
+    if (this.config.runTimeoutMs > 0) {
+      active.timeout = setTimeout(() => {
+        void this.stop(runId);
+      }, this.config.runTimeoutMs);
+      active.timeout.unref();
+    }
+    if (this.config.spawnStatusIntervalMs > 0) {
+      active.heartbeat = setInterval(() => {
+        if (Date.now() - lastActivityAt >= this.config.spawnStatusIntervalMs) {
+          sendStatus(
+            `${formatStatusWithProject(this.config, project, "Codex is still working...")}\nrun=${runId}`
+          );
+        }
+      }, this.config.spawnStatusIntervalMs);
+      active.heartbeat.unref();
+    }
+    this.activeRuns.set(runId, active);
+
+    const done = new Promise<CodexTurnResult>((resolve, reject) => {
+      let settled = false;
+      let finalOutput = "";
+      const agentTextById = new Map<string, string>();
+      const streamedOutputs: string[] = [];
+
+      const finish = (fn: () => void): void => {
+        if (settled) return;
+        settled = true;
+        if (active.timeout) clearTimeout(active.timeout);
+        if (active.heartbeat) clearInterval(active.heartbeat);
+        this.activeRuns.delete(runId);
+        active.client.unsubscribe(handleNotification);
+        this.scheduleClientShutdown(project, resolvedSessionId, active.client);
+        fn();
+      };
+
+      const handleNotification = (method: string, params: Record<string, unknown>): void => {
+        if (String(params.threadId || "") !== resolvedSessionId) {
+          return;
+        }
+
+        if (method === "turn/started") {
+          const turn = isRecord(params.turn) ? params.turn : {};
+          active.turnId = String(turn.id || "").trim();
+          sendStatus(formatStatusWithProject(this.config, project, "Codex is thinking..."));
+          if (active.cancelled && active.turnId) {
+            void active.client.interruptTurn(resolvedSessionId, active.turnId).catch(() => undefined);
+          }
+          return;
+        }
+
+        if (method === "item/agentMessage/delta") {
+          const itemId = String(params.itemId || "").trim();
+          if (!itemId) return;
+          const prior = agentTextById.get(itemId) || "";
+          agentTextById.set(itemId, `${prior}${String(params.delta || "")}`);
+          return;
+        }
+
+        if (method === "item/completed") {
+          const item = isRecord(params.item) ? params.item : {};
+          if (String(item.type || "") !== "agentMessage") return;
+          const itemId = String(item.id || "").trim();
+          const text = String(item.text || agentTextById.get(itemId) || "").trim();
+          if (!text) return;
+          finalOutput = text;
+          if (!streamedOutputs.includes(text)) {
+            streamedOutputs.push(text);
+            if (streamedOutputs.length > STREAMED_OUTPUT_DEDUPE_WINDOW) {
+              streamedOutputs.shift();
+            }
+            sendUpdate(text);
+          }
+          return;
+        }
+
+        if (method === "turn/interrupted") {
+          finish(() =>
+            resolve({
+              runId,
+              sessionId: resolvedSessionId,
+              output: finalOutput || "Run cancelled or timed out.",
+              status: "cancelled"
+            })
+          );
+          return;
+        }
+
+        if (method === "turn/failed") {
+          const turn = isRecord(params.turn) ? params.turn : {};
+          const error = isRecord(turn.error) ? turn.error : {};
+          const message = String(error.message || turn.error || "Codex app-server turn failed.").trim();
+          finish(() => reject(new Error(message)));
+          return;
+        }
+
+        if (method === "turn/completed") {
+          const output =
+            finalOutput ||
+            Array.from(agentTextById.values())
+              .join("\n")
+              .trim() ||
+            "Codex completed without a final message.";
+          finish(() =>
+            resolve({
+              runId,
+              sessionId: resolvedSessionId,
+              output: active.cancelled ? finalOutput || "Run cancelled or timed out." : output,
+              status: active.cancelled ? "cancelled" : "completed"
+            })
+          );
+        }
+      };
+
+      active.client.subscribe(handleNotification);
+
+      void active.client
+        .startTurn(resolvedSessionId, input.text, options)
+        .then((turnId) => {
+          active.turnId = turnId || active.turnId;
+          if (active.cancelled && active.turnId) {
+            return active.client.interruptTurn(resolvedSessionId, active.turnId);
+          }
+          return undefined;
+        })
+        .catch((error) => {
+          if (active.cancelled) {
+            finish(() =>
+              resolve({
+                runId,
+                sessionId: resolvedSessionId,
+                output: finalOutput || "Run cancelled or timed out.",
+                status: "cancelled"
+              })
+            );
+            return;
+          }
+          finish(() => reject(error instanceof Error ? error : new Error(String(error))));
+        });
+    });
+
+    return { runId, done };
+  }
+
+  async stop(runId: string): Promise<boolean> {
+    const active = this.activeRuns.get(runId);
+    if (!active) return false;
+    active.cancelled = true;
+    if (active.timeout) clearTimeout(active.timeout);
+    if (active.heartbeat) clearInterval(active.heartbeat);
+    if (active.turnId) {
+      await active.client.interruptTurn(active.sessionId, active.turnId).catch(() => undefined);
+    } else {
+      this.clearIdleShutdown(this.clientKey(active.client.project, active.sessionId));
+      this.evictClient(active.client);
+      await active.client.shutdown().catch(() => undefined);
+    }
+    return true;
+  }
+
+  async getSession(sessionId: string): Promise<boolean> {
+    const filePath = await findSessionFile(this.config.sessionsDir, sessionId);
+    return filePath !== undefined;
+  }
+
+  private async getOrCreateClient(
+    project: string,
+    sessionId: string | undefined,
+    options?: CodexTurnOptions
+  ): Promise<{ client: AppServerSessionClient; sessionId: string }> {
+    if (sessionId) {
+      const key = this.clientKey(project, sessionId);
+      this.clearIdleShutdown(key);
+      const existing = this.clients.get(key);
+      if (existing?.isAlive()) {
+        await existing.resumeSession(sessionId, options);
+        return { client: existing, sessionId };
+      }
+      const client = new AppServerSessionClient(this.config, project);
+      await client.resumeSession(sessionId, options);
+      this.clients.set(key, client);
+      return { client, sessionId };
+    }
+
+    const createdSessionId = await this.bootstrapBackend.createSession(
+      project,
+      this.bootstrapOptions(options)
+    );
+    this.clearIdleShutdown(this.clientKey(project, createdSessionId));
+    const client = new AppServerSessionClient(this.config, project);
+    await client.resumeSession(createdSessionId, options);
+    this.clients.set(this.clientKey(project, createdSessionId), client);
+    return { client, sessionId: createdSessionId };
+  }
+
+  private clientKey(project: string, sessionId: string): string {
+    return `${project}::${sessionId}`;
+  }
+
+  private evictClient(client: AppServerSessionClient): void {
+    for (const [key, value] of this.clients.entries()) {
+      if (value === client) {
+        this.clearIdleShutdown(key);
+        this.clients.delete(key);
+      }
+    }
+  }
+
+  private scheduleClientShutdown(
+    project: string,
+    sessionId: string,
+    client: AppServerSessionClient
+  ): void {
+    if (this.hasActiveRunForClient(client)) return;
+
+    const key = this.clientKey(project, sessionId);
+    this.clearIdleShutdown(key);
+
+    const timer = setTimeout(() => {
+      this.idleShutdowns.delete(key);
+      if (this.clients.get(key) !== client) return;
+      if (this.hasActiveRunForClient(client)) return;
+      this.clients.delete(key);
+      void client.shutdown().catch(() => undefined);
+    }, APP_SERVER_CLIENT_IDLE_SHUTDOWN_MS);
+    timer.unref();
+    this.idleShutdowns.set(key, timer);
+  }
+
+  private clearIdleShutdown(key: string): void {
+    const timer = this.idleShutdowns.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      this.idleShutdowns.delete(key);
+    }
+  }
+
+  private hasActiveRunForClient(client: AppServerSessionClient): boolean {
+    for (const active of this.activeRuns.values()) {
+      if (active.client === client) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private bootstrapOptions(options?: CodexTurnOptions): CodexTurnOptions | undefined {
+    if (!options) return undefined;
+    return {
+      ...options,
+      searchEnabled: false
+    };
+  }
 }
 
 class SpawnCodexBackend implements CodexBackend {
@@ -102,6 +432,17 @@ class SpawnCodexBackend implements CodexBackend {
   }): Promise<CodexRunHandle> {
     const runId = randomUUID();
     await ensureProject(params.project);
+    let lastActivityAt = Date.now();
+
+    const sendStatus = (text: string): void => {
+      lastActivityAt = Date.now();
+      void params.hooks?.onStatus?.(text);
+    };
+
+    const sendUpdate = (text: string): void => {
+      lastActivityAt = Date.now();
+      void params.hooks?.onUpdate?.(text);
+    };
 
     const args = ["exec", "--json", "--skip-git-repo-check", "--cd", params.project];
 
@@ -138,8 +479,14 @@ class SpawnCodexBackend implements CodexBackend {
     });
 
     const active: ActiveProcess = { child, cancelled: false };
-    void params.hooks?.onStatus?.(
-      params.sessionId ? `resuming Codex session ${params.sessionId}...` : "starting a new Codex session..."
+    sendStatus(
+      formatStatusWithProject(
+        this.config,
+        params.project,
+        params.sessionId
+          ? `resuming Codex session ${params.sessionId}...`
+          : "starting a new Codex session..."
+      )
     );
     if (this.config.runTimeoutMs > 0) {
       active.timeout = setTimeout(() => {
@@ -155,7 +502,11 @@ class SpawnCodexBackend implements CodexBackend {
     }
     if (this.config.spawnStatusIntervalMs > 0) {
       active.heartbeat = setInterval(() => {
-        void params.hooks?.onStatus?.(`Codex is still working...\nrun=${runId}`);
+        if (Date.now() - lastActivityAt >= this.config.spawnStatusIntervalMs) {
+          sendStatus(
+            `${formatStatusWithProject(this.config, params.project, "Codex is still working...")}\nrun=${runId}`
+          );
+        }
       }, this.config.spawnStatusIntervalMs);
       active.heartbeat.unref();
     }
@@ -189,7 +540,7 @@ class SpawnCodexBackend implements CodexBackend {
         }
 
         if (event.type === "turn.started") {
-          void params.hooks?.onStatus?.("Codex is thinking...");
+          sendStatus(formatStatusWithProject(this.config, params.project, "Codex is thinking..."));
           return;
         }
 
@@ -207,7 +558,7 @@ class SpawnCodexBackend implements CodexBackend {
               if (streamedOutputs.length > STREAMED_OUTPUT_DEDUPE_WINDOW) {
                 streamedOutputs.shift();
               }
-              void params.hooks?.onUpdate?.(event.item.text);
+              sendUpdate(event.item.text);
             }
           }
         }
@@ -217,7 +568,7 @@ class SpawnCodexBackend implements CodexBackend {
       stderrLines.on("line", (line) => {
         stderr += `${line}\n`;
         if (line.includes("failed to connect to websocket")) {
-          void params.hooks?.onStatus?.("Codex upstream websocket failed, retrying...");
+          sendStatus("Codex upstream websocket failed, retrying...");
         }
       });
 
@@ -651,4 +1002,8 @@ function stripScreenPrefix(current: string, baseline: string): string {
     idx += 1;
   }
   return currentLines.slice(idx).join("\n");
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return !!value && typeof value === "object";
 }

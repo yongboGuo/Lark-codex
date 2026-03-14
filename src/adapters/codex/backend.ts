@@ -24,7 +24,7 @@ export interface CodexTurnOptions {
 }
 
 export interface CodexBackend {
-  readonly mode: "spawn" | "terminal";
+  readonly mode: "spawn" | "terminal" | "app-server";
   createSession(project: string, options?: CodexTurnOptions): Promise<string>;
   runTurn(
     input: IncomingMessage,
