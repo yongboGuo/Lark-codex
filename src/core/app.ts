@@ -10,6 +10,8 @@ import { parseCommand } from "./command-router.js";
 import { BindingStore } from "../store/binding-store.js";
 import { ActiveRun, IncomingMessage, SessionBinding } from "../types/domain.js";
 import { getSessionSummary, listRecentSessions } from "../adapters/codex/session-files.js";
+import { listTrustedProjects } from "../adapters/codex/project-files.js";
+import { getCodexRuntimeMeta } from "../adapters/codex/runtime-meta.js";
 
 export class App {
   private readonly store: BindingStore;
@@ -26,8 +28,8 @@ export class App {
     console.log("codex-feishu-bridge starting", {
       nodeEnv: this.config.nodeEnv,
       configPath: this.config.configPath,
-      workspaceRoot: this.config.workspace.root,
-      defaultWorkspace: this.config.workspace.defaultWorkspace,
+      projectAllowedRoots: this.config.project.allowedRoots,
+      defaultProject: this.config.project.defaultProject,
       codexBin: this.config.codex.bin,
       codexHome: this.config.codex.home,
       codexProfileMode: this.config.codex.profileMode,
@@ -64,12 +66,16 @@ export class App {
         }
       } catch (error) {
         const text = error instanceof Error ? error.message : "Unknown bridge error.";
-        await this.feishu?.send({
-          chatId: message.chatId,
-          text: `bridge error: ${text}`,
-          replyToMessageId: message.messageId,
-          threadId: message.threadId
-        });
+        try {
+          await this.feishu?.send({
+            chatId: message.chatId,
+            text: `bridge error: ${text}`,
+            replyToMessageId: message.messageId,
+            threadId: message.threadId
+          });
+        } catch (sendError) {
+          console.error("failed to send bridge error to Feishu", sendError);
+        }
       }
     });
   }
@@ -90,12 +96,14 @@ export class App {
         "- `/help` show commands",
         "- `/status` show current session and run state",
         "- `/new` create and bind a fresh Codex session",
-        "- `/resume [<session-id>|-h|--all]` bind the most recent session by default, a specific session by id, or show resume help",
-        "- `/sessions [n]` list recent native Codex session ids",
+        "- `/sessions [list [-n N|--all]|-h|--help]` show the current bound session, list recent sessions, or show sessions help",
+        "- `/resume [--last|<session-id>|-n N|-h|--all] [-C|--cd <dir>]` bind the latest session by default, optionally switching project",
         "- `/stop` stop the current active run",
-        "- `/workspace` show the bound workspace",
-        "- `/workspace <path>` bind this conversation to a workspace under `WORKSPACE_ROOT`",
-        "- `/approvals [auto|full-access]` show or change Codex approvals"
+        "- `/project [list [--all|--trusted]|bind [-n N|-m|--mkdir <path>|<path>]|-h]` show, list, or bind projects",
+        "- `/approvals [auto|full-access]` show or change Codex approvals",
+        "- `/search [on|off]` show or change live web search for this conversation",
+        "- `/model [name|clear]` show or change the Codex model for this conversation",
+        "- `/profile [name|clear]` show or change the Codex profile for this conversation"
       ].join("\n");
     }
 
@@ -104,17 +112,38 @@ export class App {
     const activeRun = this.activeRuns.get(key);
 
     if (command?.name === "status") {
-      const workspace = existing?.workspace || this.config.workspace.defaultWorkspace;
+      const project = existing?.project || this.config.project.defaultProject;
       const sessionId = existing?.codexSessionId || "(none)";
+      const session =
+        existing?.codexSessionId
+          ? await getSessionSummary(this.config.codex.sessionsDir, existing.codexSessionId)
+          : undefined;
+      const trustedProjects = await this.listTrustedProjects();
+      const runtimeMeta = await getCodexRuntimeMeta(this.config.codex.home);
+      const agentsPath = path.join(project, "AGENTS.md");
+      const hasAgents = await fs
+        .stat(agentsPath)
+        .then((stats) => stats.isFile())
+        .catch(() => false);
       return [
         "# Bridge Status",
         "",
         `- **conversation**: \`${key}\``,
         `- **session**: \`${sessionId}\``,
-        `- **workspace**: \`${workspace}\``,
+        `- **project**: \`${project}\``,
+        `- **trusted**: \`${trustedProjects.includes(project) ? "yes" : "no"}\``,
         `- **backend**: \`${this.codex.mode}\``,
+        `- **codex**: \`${runtimeMeta.version || "(unknown)"}\``,
         `- **sandbox**: \`${this.config.codex.sandboxMode}\``,
-        `- **run**: \`${activeRun ? `${activeRun.status}:${activeRun.runId}` : "idle"}\``
+        `- **auth**: \`${runtimeMeta.authMode || "(unknown)"}\``,
+        `- **agents.md**: \`${hasAgents ? agentsPath : "<none>"}\``,
+        `- **search**: \`${existing?.searchEnabled ? "on" : "off"}\``,
+        `- **model**: \`${existing?.model || "(default)"}\``,
+        `- **profile**: \`${existing?.profile || "(default)"}\``,
+        `- **run**: \`${activeRun ? `${activeRun.status}:${activeRun.runId}` : "idle"}\``,
+        `- **session time**: ${session?.createdAt || "(unknown)"}`,
+        `- **session cwd**: \`${session?.cwd || "(unknown)"}\``,
+        `- **session about**: ${session?.preview || "(no preview)"}`
       ].join("\n");
     }
 
@@ -122,23 +151,75 @@ export class App {
       if (activeRun) {
         return `Cannot resume while run=${activeRun.runId} is ${activeRun.status}. Use /stop first.`;
       }
-      if (command.args[0] === "-h" || command.args[0] === "--help") {
+      const resumeArgs = [...command.args];
+      const cdIndex = resumeArgs.findIndex((arg) => arg === "-C" || arg === "--cd");
+      let resumeProject = existing?.project || this.config.project.defaultProject;
+      if (cdIndex >= 0) {
+        const requestedProject = resumeArgs[cdIndex + 1];
+        if (!requestedProject) {
+          return "Usage: `/resume ... [-C|--cd <dir>]`";
+        }
+        resumeProject = await this.resolveProject(
+          requestedProject,
+          existing?.project || this.config.project.defaultProject
+        );
+        resumeArgs.splice(cdIndex, 2);
+      }
+
+      if (resumeArgs[0] === "-h" || resumeArgs[0] === "--help") {
         return this.resumeHelpText();
       }
-      if (command.args[0] === "--all") {
+      if (resumeArgs[0] === "--last") {
+        resumeArgs.shift();
+      }
+      if (resumeArgs[0] === "--all") {
+        const sessions = await listRecentSessions(
+          this.config.codex.sessionsDir,
+          this.config.codex.sessionAllDefaultCount
+        );
+        if (sessions.length === 0) {
+          return `No native Codex sessions found under ${this.config.codex.sessionsDir}`;
+        }
+        return this.renderSessionList("Resume All", sessions, existing?.codexSessionId);
+      }
+      if ((resumeArgs[0] || "").startsWith("-") && resumeArgs[0] !== "-n") {
         return [
           "# Resume",
           "",
-          "- Native `codex resume --all` shows all sessions in the interactive picker, disables cwd filtering, and shows the CWD column.",
-          "- In this bridge, use `/sessions 20` to browse recent sessions across the configured `CODEX_SESSIONS_DIR`.",
-          "- Then use `/resume <session-id>` to bind one of them."
+          `- **error**: unsupported bridge option \`${resumeArgs[0]}\``,
+          "- **supported**: `/resume`, `/resume --last`, `/resume -n N`, `/resume <session-id>`, `/resume --all`, `/resume -h`, `/resume ... -C <dir>`",
+          "- Use a normal follow-up message after `/resume ...` if you want to continue the bound session."
         ].join("\n");
       }
 
-      const targetSessionId =
-        command.args[0] ||
+      let targetSessionId =
+        resumeArgs[0] ||
         (await this.findMostRecentSessionId()) ||
         existing?.codexSessionId;
+      let resumeSource = resumeArgs[0] ? "explicit" : "latest";
+      let resumeWarning: string | undefined;
+      let resumeIndex: number | undefined;
+
+      if (resumeArgs[0] === "-n") {
+        const index = Number(resumeArgs[1] || "");
+        if (!Number.isInteger(index) || index < 1) {
+          return "Usage: `/resume -n <index>` where `<index>` is an integer >= 1.";
+        }
+        const sessions = await listRecentSessions(
+          this.config.codex.sessionsDir,
+          Math.min(index, this.config.codex.sessionAllDefaultCount)
+        );
+        const selected = sessions[index - 1];
+        if (!selected) {
+          return `session index out of range: ${index}. Use \`/sessions list --all\` first.`;
+        }
+        targetSessionId = selected.sessionId;
+        resumeSource = "indexed";
+        resumeIndex = index;
+        resumeWarning =
+          "Index-based resume depends on the current recent-session ordering and may change as new sessions are created.";
+      }
+
       if (!targetSessionId) {
         return "No native Codex session found. Use `/sessions` or `/resume <session-id>`.";
       }
@@ -150,38 +231,53 @@ export class App {
       const binding = this.makeBinding(
         key,
         targetSessionId,
-        existing?.workspace || this.config.workspace.defaultWorkspace
+        resumeProject,
+        existing
       );
       await this.store.put(binding);
       return [
         "# Resume Session",
         "",
-        `- **source**: \`${command.args[0] ? "explicit" : "latest"}\``,
+        `- **source**: \`${resumeSource}\``,
+        ...(resumeIndex ? [`- **index**: \`${resumeIndex}\``] : []),
         `- **session**: \`${binding.codexSessionId}\``,
-        `- **workspace**: \`${binding.workspace}\``,
+        `- **project**: \`${binding.project}\``,
         `- **time**: ${session?.createdAt || "(unknown)"}`,
         `- **cwd**: \`${session?.cwd || "(unknown)"}\``,
-        `- **about**: ${session?.preview || "(no preview)"}`
+        `- **about**: ${session?.preview || "(no preview)"}`,
+        ...(resumeWarning ? [`- **warning**: ${resumeWarning}`] : [])
       ].join("\n");
     }
 
     if (command?.name === "sessions") {
-      const limit = Math.min(20, Math.max(1, Number(command.args[0] || "8") || 8));
-      const sessions = await listRecentSessions(this.config.codex.sessionsDir, limit);
-      if (sessions.length === 0) {
-        return `No native Codex sessions found under ${this.config.codex.sessionsDir}`;
+      if (command.args[0] === "-h" || command.args[0] === "--help") {
+        return this.sessionsHelpText();
       }
-      const header = [
-        "# Native Sessions",
+      const isLegacyNumericList = command.args.length === 1 && /^\d+$/.test(command.args[0] || "");
+      const isList = command.args[0] === "list" || isLegacyNumericList;
+      if (isList) {
+        const listArgs = command.args[0] === "list" ? command.args.slice(1) : command.args;
+        const limit = this.parseSessionsListLimit(listArgs);
+        const sessions = await listRecentSessions(this.config.codex.sessionsDir, limit);
+        if (sessions.length === 0) {
+          return `No native Codex sessions found under ${this.config.codex.sessionsDir}`;
+        }
+        return this.renderSessionList("Native Sessions", sessions, existing?.codexSessionId);
+      }
+
+      if (!existing?.codexSessionId) {
+        return "No session is currently bound. Use `/new`, `/resume`, or `/sessions list`.";
+      }
+      const session = await getSessionSummary(this.config.codex.sessionsDir, existing.codexSessionId);
+      return [
+        "# Current Session",
         "",
-        "| # | Bound | Session | Time | Cwd | About |",
-        "|---|---|---|---|---|---|"
-      ];
-      const rows = sessions.map((session, index) => {
-        const bound = session.sessionId === existing?.codexSessionId ? "yes" : "";
-        return `| ${index + 1} | ${bound} | \`${escapeMarkdownCell(session.sessionId)}\` | ${escapeMarkdownCell(session.createdAt || "(unknown)")} | \`${escapeMarkdownCell(session.cwd || "(unknown)")}\` | ${escapeMarkdownCell(session.preview || "")} |`;
-      });
-      return [...header, ...rows].join("\n");
+        `- **session**: \`${existing.codexSessionId}\``,
+        `- **project**: \`${existing.project || this.config.project.defaultProject}\``,
+        `- **time**: ${session?.createdAt || "(unknown)"}`,
+        `- **cwd**: \`${session?.cwd || "(unknown)"}\``,
+        `- **about**: ${session?.preview || "(no preview)"}`
+      ].join("\n");
     }
 
     const binding = existing;
@@ -189,15 +285,18 @@ export class App {
       if (activeRun) {
         return `Cannot create a new session while run=${activeRun.runId} is ${activeRun.status}. Use /stop first.`;
       }
-      const workspace = binding?.workspace || this.config.workspace.defaultWorkspace;
-      const sessionId = await this.codex.createSession(workspace);
-      const nextBinding = this.makeBinding(key, sessionId, workspace);
+      const project = binding?.project || this.config.project.defaultProject;
+      const sessionId = await this.codex.createSession(project, this.resolveTurnOptions(binding));
+      const nextBinding = this.makeBinding(key, sessionId, project, binding);
       await this.store.put(nextBinding);
       return [
         "# New Session",
         "",
         `- **session**: \`${sessionId}\``,
-        `- **workspace**: \`${nextBinding.workspace}\``
+        `- **project**: \`${nextBinding.project}\``,
+        `- **search**: \`${nextBinding.searchEnabled ? "on" : "off"}\``,
+        `- **model**: \`${nextBinding.model || "(default)"}\``,
+        `- **profile**: \`${nextBinding.profile || "(default)"}\``
       ].join("\n");
     }
 
@@ -212,21 +311,84 @@ export class App {
         : "Run already finished before stop completed.";
     }
 
-    if (command?.name === "workspace") {
-      const currentWorkspace = binding?.workspace || this.config.workspace.defaultWorkspace;
+    if (command?.name === "project") {
+      const currentProject = binding?.project || this.config.project.defaultProject;
+      const trustedProjects = await this.listTrustedProjects();
+      if (command.args[0] === "-h" || command.args[0] === "--help") {
+        return this.projectHelpText();
+      }
       if (command.args.length === 0) {
-        return `# Workspace\n\n- **workspace**: \`${currentWorkspace}\``;
+        return [
+          "# Project",
+          "",
+          `- **project**: \`${currentProject}\``,
+          `- **trusted**: \`${trustedProjects.includes(currentProject) ? "yes" : "no"}\``,
+          `- **allowed roots**: ${this.config.project.allowedRoots.map((root) => `\`${root}\``).join(", ")}`
+        ].join("\n");
+      }
+
+      if (command.args[0] === "list") {
+        const mode = command.args.includes("--trusted")
+          ? "trusted"
+          : command.args.includes("--all")
+            ? "all"
+            : "default";
+        const projects = await this.listProjects(mode, currentProject, trustedProjects);
+        if (projects.length === 0) {
+          return "# Projects\n\n- No projects found.";
+        }
+        return this.renderProjectList("Projects", projects, currentProject);
+      }
+
+      if (command.args[0] !== "bind") {
+        return this.projectHelpText();
       }
       if (activeRun) {
-        return `Cannot change workspace while run=${activeRun.runId} is ${activeRun.status}. Use /stop first.`;
+        return `Cannot change project while run=${activeRun.runId} is ${activeRun.status}. Use /stop first.`;
       }
-      const requested = command.args.join(" ");
-      const workspace = await this.resolveWorkspace(requested, currentWorkspace);
+
+      const bindArgs = command.args.slice(1);
+      const mkdirIndex = bindArgs.findIndex((arg) => arg === "-m" || arg === "--mkdir");
+      const createMissing = mkdirIndex >= 0;
+      const projectArgs = [...bindArgs];
+      if (mkdirIndex >= 0) {
+        projectArgs.splice(mkdirIndex, 1);
+      }
+
+      let project: string | undefined;
+      let bindWarning: string | undefined;
+      if (projectArgs[0] === "-n") {
+        const index = Number(projectArgs[1] || "");
+        if (!Number.isInteger(index) || index < 1) {
+          return "Usage: `/project bind -n <index>` where `<index>` is an integer >= 1.";
+        }
+        const projects = await this.listProjects("default", currentProject, trustedProjects);
+        const selected = projects[index - 1];
+        if (!selected) {
+          return `project index out of range: ${index}. Use \`/project list\` first.`;
+        }
+        project = selected.project;
+        bindWarning =
+          "Index-based bind uses the current `/project list` ordering and may change as projects are added or updated.";
+      } else {
+        const requested = projectArgs.join(" ").trim();
+        if (!requested) {
+          return this.projectHelpText();
+        }
+        project = await this.resolveProject(requested, currentProject, createMissing);
+      }
+
       const nextBinding = binding
-        ? { ...binding, workspace, updatedAt: new Date().toISOString() }
-        : this.makeBinding(key, undefined, workspace);
+        ? { ...binding, project, updatedAt: new Date().toISOString() }
+        : this.makeBinding(key, undefined, project);
       await this.store.put(nextBinding);
-      return `# Workspace\n\n- **workspace**: \`${workspace}\``;
+      return [
+        "# Project",
+        "",
+        `- **project**: \`${project}\``,
+        `- **trusted**: \`${trustedProjects.includes(project) ? "yes" : "no"}\``,
+        ...(bindWarning ? [`- **warning**: ${bindWarning}`] : [])
+      ].join("\n");
     }
 
     if (command?.name === "approvals") {
@@ -262,6 +424,84 @@ export class App {
       ].join("\n");
     }
 
+    if (command?.name === "search") {
+      const enabled = binding?.searchEnabled ?? false;
+      if (command.args.length === 0) {
+        return `# Search\n\n- **mode**: \`${enabled ? "on" : "off"}\``;
+      }
+      if (activeRun) {
+        return `Cannot change search while run=${activeRun.runId} is ${activeRun.status}. Use /stop first.`;
+      }
+      const normalized = command.args[0]?.toLowerCase();
+      if (!["on", "off"].includes(normalized || "")) {
+        return "# Search\n\n- **usage**: `/search [on|off]`";
+      }
+      const nextBinding = binding
+        ? { ...binding, searchEnabled: normalized === "on", updatedAt: new Date().toISOString() }
+        : this.makeBinding(
+            key,
+            undefined,
+            this.config.project.defaultProject,
+            { searchEnabled: normalized === "on" }
+          );
+      await this.store.put(nextBinding);
+      return `# Search\n\n- **mode**: \`${nextBinding.searchEnabled ? "on" : "off"}\``;
+    }
+
+    if (command?.name === "model") {
+      const current = binding?.model || "(default)";
+      if (command.args.length === 0) {
+        return `# Model\n\n- **model**: \`${current}\``;
+      }
+      if (activeRun) {
+        return `Cannot change model while run=${activeRun.runId} is ${activeRun.status}. Use /stop first.`;
+      }
+      const nextValue = command.args.join(" ").trim();
+      const nextBinding = binding
+        ? {
+            ...binding,
+            model: ["clear", "default", "reset"].includes(nextValue.toLowerCase()) ? undefined : nextValue,
+            updatedAt: new Date().toISOString()
+          }
+        : this.makeBinding(
+            key,
+            undefined,
+            this.config.project.defaultProject,
+            {
+              model: ["clear", "default", "reset"].includes(nextValue.toLowerCase()) ? undefined : nextValue
+            }
+          );
+      await this.store.put(nextBinding);
+      return `# Model\n\n- **model**: \`${nextBinding.model || "(default)"}\``;
+    }
+
+    if (command?.name === "profile") {
+      const current = binding?.profile || "(default)";
+      if (command.args.length === 0) {
+        return `# Profile\n\n- **profile**: \`${current}\``;
+      }
+      if (activeRun) {
+        return `Cannot change profile while run=${activeRun.runId} is ${activeRun.status}. Use /stop first.`;
+      }
+      const nextValue = command.args.join(" ").trim();
+      const nextBinding = binding
+        ? {
+            ...binding,
+            profile: ["clear", "default", "reset"].includes(nextValue.toLowerCase()) ? undefined : nextValue,
+            updatedAt: new Date().toISOString()
+          }
+        : this.makeBinding(
+            key,
+            undefined,
+            this.config.project.defaultProject,
+            {
+              profile: ["clear", "default", "reset"].includes(nextValue.toLowerCase()) ? undefined : nextValue
+            }
+          );
+      await this.store.put(nextBinding);
+      return `# Profile\n\n- **profile**: \`${nextBinding.profile || "(default)"}\``;
+    }
+
     if (activeRun) {
       return [
         "# Active Run",
@@ -271,7 +511,7 @@ export class App {
       ].join("\n");
     }
 
-    const workspace = binding?.workspace || this.config.workspace.defaultWorkspace;
+    const project = binding?.project || this.config.project.defaultProject;
     const provisionalRunId = `pending:${randomUUID()}`;
     this.activeRuns.set(key, {
       conversationKey: key,
@@ -282,10 +522,16 @@ export class App {
     });
 
     try {
-      const handle = await this.codex.runTurn(message, binding?.codexSessionId, workspace, {
-        onStatus: onUpdate,
-        onUpdate
-      });
+      const handle = await this.codex.runTurn(
+        message,
+        binding?.codexSessionId,
+        project,
+        this.resolveTurnOptions(binding),
+        {
+          onStatus: onUpdate,
+          onUpdate
+        }
+      );
       this.activeRuns.set(key, {
         conversationKey: key,
         codexSessionId: binding?.codexSessionId || "(pending)",
@@ -298,7 +544,7 @@ export class App {
       const nextBinding =
         binding && binding.codexSessionId === result.sessionId
           ? { ...binding, updatedAt: new Date().toISOString() }
-          : this.makeBinding(key, result.sessionId, workspace);
+          : this.makeBinding(key, result.sessionId, project, binding);
       await this.store.put(nextBinding);
       return this.codex.mode === "terminal" && onUpdate ? "" : result.output;
     } finally {
@@ -309,26 +555,57 @@ export class App {
   private makeBinding(
     conversationKey: string,
     codexSessionId: string | undefined,
-    workspace: string
+    project: string,
+    defaults?: Partial<SessionBinding>
   ): SessionBinding {
     const now = new Date().toISOString();
-    return { conversationKey, codexSessionId, workspace, createdAt: now, updatedAt: now };
+    return {
+      conversationKey,
+      codexSessionId,
+      project,
+      searchEnabled: defaults?.searchEnabled,
+      model: defaults?.model,
+      profile: defaults?.profile,
+      createdAt: defaults?.createdAt || now,
+      updatedAt: now
+    };
   }
 
-  private async resolveWorkspace(requested: string, currentWorkspace: string): Promise<string> {
+  private resolveTurnOptions(binding?: Partial<SessionBinding>) {
+    return {
+      searchEnabled: binding?.searchEnabled,
+      model: binding?.model,
+      profile: binding?.profile
+    };
+  }
+
+  private async resolveProject(
+    requested: string,
+    currentProject: string,
+    createMissing = false
+  ): Promise<string> {
     const resolved = path.resolve(
       requested.startsWith("/")
         ? requested
-        : path.resolve(currentWorkspace || this.config.workspace.defaultWorkspace, requested)
+        : path.resolve(currentProject || this.config.project.defaultProject, requested)
     );
-    const relative = path.relative(this.config.workspace.root, resolved);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) {
-      throw new Error(`Workspace must stay under ${this.config.workspace.root}`);
+    const allowed = this.config.project.allowedRoots.some((root) => {
+      const relative = path.relative(root, resolved);
+      return !relative.startsWith("..") && !path.isAbsolute(relative);
+    });
+    if (!allowed) {
+      throw new Error(
+        `Project must stay under one of: ${this.config.project.allowedRoots.join(", ")}`
+      );
     }
 
-    const stats = await fs.stat(resolved).catch(() => null);
+    let stats = await fs.stat(resolved).catch(() => null);
+    if (!stats && createMissing) {
+      await fs.mkdir(resolved, { recursive: true });
+      stats = await fs.stat(resolved).catch(() => null);
+    }
     if (!stats?.isDirectory()) {
-      throw new Error(`Workspace does not exist: ${resolved}`);
+      throw new Error(`Project does not exist: ${resolved}`);
     }
     return resolved;
   }
@@ -357,6 +634,102 @@ export class App {
     return sessions[0]?.sessionId;
   }
 
+  private async listTrustedProjects(): Promise<string[]> {
+    const trusted = await listTrustedProjects(this.config.codex.home);
+    return trusted.filter((project) => this.isAllowedProject(project));
+  }
+
+  private async listProjects(
+    mode: "default" | "all" | "trusted",
+    currentProject: string,
+    trustedProjects?: string[]
+  ): Promise<ProjectListEntry[]> {
+    const trusted = trustedProjects || (await this.listTrustedProjects());
+    const bindings = await this.store.list();
+    const seen = new Set<string>();
+    const boundProjects: ProjectListEntry[] = bindings
+      .filter((binding) => this.isAllowedProject(binding.project))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .filter((binding) => {
+        if (seen.has(binding.project)) return false;
+        seen.add(binding.project);
+        return true;
+      })
+      .map((binding) => ({
+        project: binding.project,
+        bound: true,
+        trusted: trusted.includes(binding.project),
+        updatedAt: binding.updatedAt
+      }));
+
+    const trustedOnly: ProjectListEntry[] = trusted
+      .filter((project) => !seen.has(project))
+      .map((project) => ({
+        project,
+        bound: false,
+        trusted: true
+      }));
+
+    const currentEntry: ProjectListEntry = {
+      project: currentProject,
+      bound: Boolean(bindings.find((binding) => binding.project === currentProject)),
+      trusted: trusted.includes(currentProject),
+      updatedAt: bindings.find((binding) => binding.project === currentProject)?.updatedAt
+    };
+
+    if (mode === "trusted") {
+      const trustedList = [...boundProjects.filter((item) => item.trusted), ...trustedOnly];
+      if (!trustedList.find((item) => item.project === currentProject) && currentEntry.trusted) {
+        trustedList.unshift(currentEntry);
+      }
+      return trustedList;
+    }
+
+    const defaultList = [...boundProjects];
+    if (!defaultList.find((item) => item.project === currentProject) && this.isAllowedProject(currentProject)) {
+      defaultList.unshift(currentEntry);
+    }
+    if (mode === "default") {
+      return defaultList;
+    }
+    return [...defaultList, ...trustedOnly];
+  }
+
+  private isAllowedProject(project: string): boolean {
+    return this.config.project.allowedRoots.some((root) => {
+      const relative = path.relative(root, project);
+      return !relative.startsWith("..") && !path.isAbsolute(relative);
+    });
+  }
+
+  private projectHelpText(): string {
+    return [
+      "# Project",
+      "",
+      "Inspect the current bound project, browse known projects, or bind one.",
+      "",
+      "## Usage",
+      "",
+      "- `/project`",
+      "- `/project list`",
+      "- `/project list --all`",
+      "- `/project list --trusted`",
+      "- `/project bind <path>`",
+      "- `/project bind -m <path>`",
+      "- `/project bind -n 3`",
+      "- `/project -h`",
+      "",
+      "## Notes",
+      "",
+      "- `/project list` shows the normal project list used by `/project bind -n N`.",
+      "- `/project list --all` includes trusted Codex projects that are not currently bound in the bridge store.",
+      "- `/project list --trusted` shows trusted Codex projects from `config.toml` under the allowed roots.",
+      "- `/project bind -n <index>` uses the current `/project list` ordering.",
+      `- **allowed roots**: ${this.config.project.allowedRoots.map((root) => `\`${root}\``).join(", ")}`,
+      "- Missing projects are rejected unless you use `-m` or `--mkdir`."
+    ].join("\n");
+  }
+
   private resumeHelpText(): string {
     return [
       "# Resume",
@@ -366,18 +739,113 @@ export class App {
       "## Usage",
       "",
       "- `/resume`",
+      "- `/resume --last`",
+      "- `/resume -n 3`",
       "- `/resume <session-id>`",
+      "- `/resume --last -C subdir`",
       "- `/resume -h`",
       "- `/resume --all`",
       "",
       "## Notes",
       "",
-      "- `/resume` defaults to the most recent recorded native Codex session.",
+      "- `/resume` and `/resume --last` both bind the most recent recorded native Codex session.",
+      "- `/resume -n <index>` binds the Nth session from the current recent-session ordering.",
       "- `/resume <session-id>` binds a specific native session id.",
-      "- Native `codex resume --all` opens an interactive picker showing all sessions and the CWD column.",
-      "- In Feishu, use `/sessions [n]` instead of a picker."
+      "- `-C, --cd <dir>` switches the bound project while resuming the session.",
+      "- `/resume --all` shows the recent sessions list in Feishu instead of opening an interactive picker.",
+      `- In Feishu, use \`/sessions list --all\` for the default list of \`${this.config.codex.sessionAllDefaultCount}\` sessions, or \`/sessions list -n 12\` for a smaller list.`,
+      "- Index-based resume is order-dependent and should be treated as a convenience, not a stable identifier.",
+      "- Native Codex flags like `--config`, `--remote`, `--image`, `--model`, `--sandbox`, and prompt arguments are not exposed on this bridge command."
     ].join("\n");
   }
+
+  private sessionsHelpText(): string {
+    return [
+      "# Sessions",
+      "",
+      "Inspect the current bound session or browse recent native Codex sessions.",
+      "",
+      "## Usage",
+      "",
+      "- `/sessions`",
+      "- `/sessions list`",
+      "- `/sessions list -n 12`",
+      "- `/sessions list --all`",
+      "- `/sessions -h`",
+      "",
+      "## Notes",
+      "",
+      "- `/sessions` shows the current bound session for this conversation.",
+      "- `/sessions list` shows recent native Codex sessions from `CODEX_SESSIONS_DIR`.",
+      `- \`/sessions list\` defaults to \`${this.config.codex.sessionListDefaultCount}\` sessions.`,
+      `- \`/sessions list --all\` uses the default count \`${this.config.codex.sessionAllDefaultCount}\`.`,
+      `- \`-n\` accepts values from \`1\` to \`${this.config.codex.sessionAllDefaultCount}\`.`,
+      "- Use `/resume <session-id>` to bind one of the listed sessions."
+    ].join("\n");
+  }
+
+  private parseSessionsListLimit(args: string[]): number {
+    if (args[0] === "--all") {
+      return this.config.codex.sessionAllDefaultCount;
+    }
+    if (args.length === 1 && /^\d+$/.test(args[0] || "")) {
+      return Math.min(
+        this.config.codex.sessionListDefaultCount,
+        Math.max(1, Number(args[0]) || this.config.codex.sessionListDefaultCount)
+      );
+    }
+    const flagIndex = args.findIndex((arg) => arg === "-n" || arg === "--count");
+    const raw = flagIndex >= 0 ? args[flagIndex + 1] : undefined;
+    return Math.min(
+      this.config.codex.sessionListDefaultCount,
+      Math.max(1, Number(raw || String(this.config.codex.sessionListDefaultCount)) || this.config.codex.sessionListDefaultCount)
+    );
+  }
+
+  private renderSessionList(
+    title: string,
+    sessions: Awaited<ReturnType<typeof listRecentSessions>>,
+    boundSessionId?: string
+  ): string {
+    const header = [
+      `# ${title}`,
+      "",
+      "| # | Bound | Session | Time | Cwd | About |",
+      "|---|---|---|---|---|---|"
+    ];
+    const rows = sessions.map((session, index) => {
+      const bound = session.sessionId === boundSessionId ? "yes" : "";
+      return `| ${index + 1} | ${bound} | \`${escapeMarkdownCell(session.sessionId)}\` | ${escapeMarkdownCell(session.createdAt || "(unknown)")} | \`${escapeMarkdownCell(session.cwd || "(unknown)")}\` | ${escapeMarkdownCell(session.preview || "")} |`;
+    });
+    return [...header, ...rows].join("\n");
+  }
+
+  private renderProjectList(
+    title: string,
+    projects: ProjectListEntry[],
+    currentProject: string
+  ): string {
+    const lines = [`# ${title}`, ""];
+    for (const [index, item] of projects.entries()) {
+      const flags = [
+        item.project === currentProject ? "current" : "",
+        item.bound ? "bound" : "",
+        item.trusted ? "trusted" : ""
+      ].filter(Boolean);
+      lines.push(`${index + 1}. \`${item.project}\`${flags.length ? ` (${flags.join(", ")})` : ""}`);
+      if (item.updatedAt) {
+        lines.push(`   - updated: ${item.updatedAt}`);
+      }
+    }
+    return lines.join("\n");
+  }
+}
+
+interface ProjectListEntry {
+  project: string;
+  bound: boolean;
+  trusted: boolean;
+  updatedAt?: string;
 }
 
 function escapeMarkdownCell(value: string): string {

@@ -99,7 +99,7 @@ function isPromptLine(line: string, prompt: string): boolean {
 }
 
 function isStatusLine(line: string): boolean {
-  return line.startsWith("Tip:") || (line.includes("gpt-5.4") && line.includes("/volumes/ws/"));
+  return line.startsWith("Tip:");
 }
 
 function isChromeLine(line: string): boolean {

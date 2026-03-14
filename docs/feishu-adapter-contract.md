@@ -254,7 +254,7 @@ The rest of the bridge should not care which mode is underneath.
 ## Non-goals
 
 The Feishu adapter should not:
-- decide workspace policy
+- decide project policy
 - decide session binding policy
 - interpret Codex run state beyond presentation needs
 - own long-term history as conversation truth

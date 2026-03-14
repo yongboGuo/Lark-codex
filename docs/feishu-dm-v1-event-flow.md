@@ -98,7 +98,7 @@ User sends:
 4. reply with:
    - conversation key
    - native Codex session id if bound
-   - workspace
+   - project
    - active run state if any
 
 ## Command flow: `/new`
@@ -115,7 +115,7 @@ User sends:
 2. resolve conversation key
 3. create a fresh native Codex session
 4. replace the stored binding for this conversation
-5. reply with the new native session id and workspace
+5. reply with the new native session id and project
 
 ## Command flow: `/stop`
 

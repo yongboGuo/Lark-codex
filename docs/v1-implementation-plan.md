@@ -21,7 +21,7 @@ A v1 build is successful when all of the following work:
 4. If a binding exists, the bridge resumes that native Codex session.
 5. The bridge sends the user turn to Codex.
 6. The bridge returns a visible reply to Feishu.
-7. `/status` reports the bound native session id and workspace.
+7. `/status` reports the bound native session id and project.
 8. `/new` creates and rebinds a fresh native Codex session.
 9. `/stop` cancels the active run without deleting the binding.
 
@@ -43,7 +43,7 @@ A v1 build is successful when all of the following work:
 Implement:
 - env loading
 - required config validation
-- workspace root restriction
+- project root restriction
 - Feishu credentials config
 - Codex binary/home/session path config
 
@@ -94,7 +94,7 @@ Implement:
 - `/new`
 - `/resume` (minimal/latest-bound version for v1)
 - `/stop`
-- `/workspace`
+- `/project`
 
 Deliverables:
 - `src/core/command-dispatcher.ts`
@@ -253,6 +253,6 @@ Reasonable next steps:
 - group thread support
 - image/file passthrough
 - better streaming UX
-- workspace switching with guardrails
+- project switching with guardrails
 - optional cards for `/help` and `/status`
 - more robust session discovery for `/resume`

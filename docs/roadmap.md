@@ -4,7 +4,7 @@
 - define architecture
 - define session model
 - define minimal command set
-- define workspace restrictions
+- define project restrictions
 
 ## Phase 1 — minimal relay
 - Feishu websocket receive/send
@@ -17,7 +17,7 @@
 ## Phase 2 — usability
 - streaming output
 - better formatting for long output
-- workspace selection and shortcuts
+- project selection and shortcuts
 - persistent binding store
 - better error handling and retry behavior
 

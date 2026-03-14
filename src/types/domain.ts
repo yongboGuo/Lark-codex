@@ -4,7 +4,10 @@ export type CodexSessionId = string;
 export interface SessionBinding {
   conversationKey: FeishuConversationKey;
   codexSessionId?: CodexSessionId;
-  workspace: string;
+  project: string;
+  searchEnabled?: boolean;
+  model?: string;
+  profile?: string;
   createdAt: string;
   updatedAt: string;
 }

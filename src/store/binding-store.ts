@@ -6,6 +6,18 @@ interface StoreShape {
   bindings: SessionBinding[];
 }
 
+interface LegacySessionBinding {
+  conversationKey: string;
+  codexSessionId?: string;
+  workspace?: string;
+  project?: string;
+  searchEnabled?: boolean;
+  model?: string;
+  profile?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export class BindingStore {
   constructor(private readonly filePath: string) {}
 
@@ -30,7 +42,21 @@ export class BindingStore {
   private async read(): Promise<StoreShape> {
     try {
       const raw = await fs.readFile(this.filePath, "utf8");
-      return JSON.parse(raw) as StoreShape;
+      const parsed = JSON.parse(raw) as { bindings?: LegacySessionBinding[] };
+      return {
+        bindings: (parsed.bindings || [])
+          .filter((item) => item.conversationKey && (item.project || item.workspace))
+          .map((item) => ({
+            conversationKey: item.conversationKey,
+            codexSessionId: item.codexSessionId,
+            project: item.project || item.workspace || "",
+            searchEnabled: item.searchEnabled,
+            model: item.model,
+            profile: item.profile,
+            createdAt: item.createdAt || new Date(0).toISOString(),
+            updatedAt: item.updatedAt || item.createdAt || new Date(0).toISOString()
+          }))
+      };
     } catch (error) {
       return { bindings: [] };
     }

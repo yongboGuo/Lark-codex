@@ -47,16 +47,20 @@ export class FeishuGateway {
   async send(message: OutgoingMessage): Promise<void> {
     const text = message.text || "";
     for (const chunk of splitMessageText(text, FEISHU_TEXT_SOFT_LIMIT)) {
-      await this.client.im.v1.message.create({
-        params: {
-          receive_id_type: "chat_id"
-        },
-        data: {
-          receive_id: message.chatId,
-          msg_type: "text",
-          content: JSON.stringify({ text: chunk })
-        }
-      });
+      try {
+        await this.client.im.v1.message.create({
+          params: {
+            receive_id_type: "chat_id"
+          },
+          data: {
+            receive_id: message.chatId,
+            msg_type: "text",
+            content: JSON.stringify({ text: chunk })
+          }
+        });
+      } catch (error) {
+        throw new Error(`Feishu send failed: ${formatFeishuError(error)}`);
+      }
     }
   }
 
@@ -136,4 +140,45 @@ function pickSplitPoint(text: string, maxChars: number): number {
   const space = slice.lastIndexOf(" ");
   if (space >= Math.floor(maxChars * 0.5)) return space + 1;
   return maxChars;
+}
+
+function formatFeishuError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return typeof error === "string" ? error : "unknown error";
+  }
+
+  const parts = [error.message];
+  const maybe = error as Error & {
+    code?: string;
+    response?: {
+      status?: number;
+      statusText?: string;
+      data?: unknown;
+    };
+  };
+
+  if (maybe.code) {
+    parts.push(`code=${maybe.code}`);
+  }
+  if (maybe.response?.status) {
+    parts.push(`status=${maybe.response.status}`);
+  }
+  if (maybe.response?.statusText) {
+    parts.push(`statusText=${maybe.response.statusText}`);
+  }
+  if (maybe.response?.data !== undefined) {
+    const body = compactValue(maybe.response.data);
+    if (body) parts.push(`body=${body}`);
+  }
+
+  return parts.join(" | ");
+}
+
+function compactValue(value: unknown): string {
+  try {
+    const raw = typeof value === "string" ? value : JSON.stringify(value);
+    return raw.replace(/\s+/g, " ").trim().slice(0, 400);
+  } catch {
+    return "";
+  }
 }

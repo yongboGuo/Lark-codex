@@ -17,13 +17,20 @@ export interface CodexRunHooks {
   onUpdate?: (text: string) => Promise<void> | void;
 }
 
+export interface CodexTurnOptions {
+  searchEnabled?: boolean;
+  model?: string;
+  profile?: string;
+}
+
 export interface CodexBackend {
   readonly mode: "spawn" | "terminal";
-  createSession(workspace: string): Promise<string>;
+  createSession(project: string, options?: CodexTurnOptions): Promise<string>;
   runTurn(
     input: IncomingMessage,
     sessionId: string | undefined,
-    workspace: string,
+    project: string,
+    options?: CodexTurnOptions,
     hooks?: CodexRunHooks
   ): Promise<CodexRunHandle>;
   stop(runId: string): Promise<boolean>;

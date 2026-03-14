@@ -9,7 +9,13 @@ import xterm from "@xterm/headless";
 import stripAnsi from "strip-ansi";
 import { AppConfig } from "../../config/env.js";
 import { IncomingMessage } from "../../types/domain.js";
-import { CodexBackend, CodexRunHandle, CodexRunHooks, CodexTurnResult } from "./backend.js";
+import {
+  CodexBackend,
+  CodexRunHandle,
+  CodexRunHooks,
+  CodexTurnOptions,
+  CodexTurnResult
+} from "./backend.js";
 import { findSessionFile } from "./session-files.js";
 import {
   hasPrompt,
@@ -42,10 +48,11 @@ class SpawnCodexBackend implements CodexBackend {
 
   constructor(private readonly config: AppConfig["codex"]) {}
 
-  async createSession(workspace: string): Promise<string> {
+  async createSession(project: string, options?: CodexTurnOptions): Promise<string> {
     const handle = await this.executeTurn({
       prompt: CREATE_SESSION_PROMPT,
-      workspace
+      project,
+      options
     });
     const result = await handle.done;
     return result.sessionId;
@@ -54,13 +61,15 @@ class SpawnCodexBackend implements CodexBackend {
   async runTurn(
     input: IncomingMessage,
     sessionId: string | undefined,
-    workspace: string,
+    project: string,
+    options?: CodexTurnOptions,
     hooks?: CodexRunHooks
   ): Promise<CodexRunHandle> {
     return this.executeTurn({
       prompt: input.text,
-      workspace,
+      project,
       sessionId,
+      options,
       hooks
     });
   }
@@ -86,14 +95,25 @@ class SpawnCodexBackend implements CodexBackend {
 
   private async executeTurn(params: {
     prompt: string;
-    workspace: string;
+    project: string;
     sessionId?: string;
+    options?: CodexTurnOptions;
     hooks?: CodexRunHooks;
   }): Promise<CodexRunHandle> {
     const runId = randomUUID();
-    await ensureWorkspace(params.workspace);
+    await ensureProject(params.project);
 
-    const args = ["exec", "--json", "--skip-git-repo-check", "--cd", params.workspace];
+    const args = ["exec", "--json", "--skip-git-repo-check", "--cd", params.project];
+
+    if (params.options?.searchEnabled) {
+      args.push("--search");
+    }
+    if (params.options?.model) {
+      args.push("-m", params.options.model);
+    }
+    if (params.options?.profile) {
+      args.push("-p", params.options.profile);
+    }
 
     if (this.config.sandboxMode === "danger-full-access") {
       args.push("--dangerously-bypass-approvals-and-sandbox");
@@ -108,7 +128,7 @@ class SpawnCodexBackend implements CodexBackend {
     }
 
     const child = spawn(this.config.bin, args, {
-      cwd: params.workspace,
+      cwd: params.project,
       env: {
         ...process.env,
         CODEX_HOME: this.config.home,
@@ -263,21 +283,22 @@ class TerminalCodexBackend implements CodexBackend {
     private readonly spawnBackend: SpawnCodexBackend
   ) {}
 
-  async createSession(workspace: string): Promise<string> {
-    return this.spawnBackend.createSession(workspace);
+  async createSession(project: string, options?: CodexTurnOptions): Promise<string> {
+    return this.spawnBackend.createSession(project, options);
   }
 
   async runTurn(
     input: IncomingMessage,
     sessionId: string | undefined,
-    workspace: string,
+    project: string,
+    options?: CodexTurnOptions,
     hooks?: CodexRunHooks
   ): Promise<CodexRunHandle> {
-    const resolvedSessionId = sessionId || (await this.createSession(workspace));
+    const resolvedSessionId = sessionId || (await this.createSession(project, options));
     const runId = randomUUID();
     const done = (async () => {
       await hooks?.onStatus?.("starting terminal session...");
-      const terminal = await this.getOrCreateTerminal(resolvedSessionId, workspace);
+      const terminal = await this.getOrCreateTerminal(resolvedSessionId, project);
       const handle = terminal.runTurn(input.text, runId, hooks);
       return handle.done;
     })();
@@ -299,7 +320,7 @@ class TerminalCodexBackend implements CodexBackend {
     return filePath !== undefined;
   }
 
-  private async getOrCreateTerminal(sessionId: string, workspace: string): Promise<TerminalSession> {
+  private async getOrCreateTerminal(sessionId: string, project: string): Promise<TerminalSession> {
     const existing = this.terminals.get(sessionId);
     if (existing && existing.isAlive()) {
       await existing.ready();
@@ -312,7 +333,7 @@ class TerminalCodexBackend implements CodexBackend {
     const terminal = new TerminalSession({
       codex: this.config,
       sessionId,
-      workspace
+      project
     });
     this.terminals.set(sessionId, terminal);
     try {
@@ -328,12 +349,12 @@ class TerminalCodexBackend implements CodexBackend {
 interface TerminalSessionOptions {
   codex: AppConfig["codex"];
   sessionId: string;
-  workspace: string;
+  project: string;
 }
 
 class TerminalSession {
   readonly sessionId: string;
-  readonly workspace: string;
+  readonly project: string;
   currentRunId?: string;
 
   private readonly ptyProcess: pty.IPty;
@@ -349,14 +370,14 @@ class TerminalSession {
 
   constructor(private readonly options: TerminalSessionOptions) {
     this.sessionId = options.sessionId;
-    this.workspace = options.workspace;
+    this.project = options.project;
 
     this.startupPromise = new Promise<void>((resolve, reject) => {
       this.startupResolve = resolve;
       this.startupReject = reject;
     });
 
-    const args = ["--no-alt-screen", "--cd", this.workspace];
+    const args = ["--no-alt-screen", "--cd", this.project];
     if (this.options.codex.sandboxMode === "danger-full-access") {
       args.push("--dangerously-bypass-approvals-and-sandbox");
     } else {
@@ -368,7 +389,7 @@ class TerminalSession {
       name: "xterm-256color",
       cols: 100,
       rows: 28,
-      cwd: this.workspace,
+      cwd: this.project,
       env: {
         ...process.env,
         CODEX_HOME: this.options.codex.home,
@@ -550,7 +571,7 @@ class TerminalSession {
     console.warn("terminal startup debug", {
       reason,
       sessionId: this.sessionId,
-      workspace: this.workspace,
+      project: this.project,
       startupDone: this.startupDone,
       startupChunkCount: this.startupChunkCount,
       rawBytes: this.rawBuffer.length,
@@ -576,10 +597,10 @@ interface PendingTerminalRun {
   reject: (error: Error) => void;
 }
 
-async function ensureWorkspace(workspace: string): Promise<void> {
-  const stats = await fs.stat(workspace).catch(() => null);
+async function ensureProject(project: string): Promise<void> {
+  const stats = await fs.stat(project).catch(() => null);
   if (!stats?.isDirectory()) {
-    throw new Error(`Workspace does not exist: ${workspace}`);
+    throw new Error(`Project does not exist: ${project}`);
   }
 }
 

@@ -31,7 +31,7 @@ A Feishu conversation maps to a native Codex session.
 The bridge stores only:
 - conversation key
 - native Codex session id
-- workspace
+- project
 - timestamps
 
 It does not store a synthetic message transcript as the session source of truth.

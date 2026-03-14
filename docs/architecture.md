@@ -18,7 +18,7 @@ The bridge must not maintain a second full conversation store.
 
 1. Feishu receives a message event.
 2. The bridge normalizes the event into an internal input shape.
-3. The router resolves the target workspace and Codex session binding.
+3. The router resolves the target project and Codex session binding.
 4. If no binding exists, the bridge creates a new native Codex session.
 5. If a binding exists, the bridge resumes that native Codex session.
 6. The bridge sends the user input to Codex.
@@ -31,7 +31,7 @@ The bridge must not maintain a second full conversation store.
 The bridge may store:
 
 - Feishu chat/thread id -> Codex session id
-- workspace binding for a session
+- project binding for a session
 - active run lock / in-flight status
 - last seen message ids for deduplication
 - lightweight audit timestamps
@@ -55,7 +55,7 @@ Responsibilities:
 Responsibilities:
 - decide whether input is a control command or Codex-bound input
 - resolve chat/thread binding
-- choose workspace/session target
+- choose project/session target
 
 ### 3. Codex runtime adapter
 Responsibilities:
@@ -85,14 +85,14 @@ A Feishu thread or DM should map to one active Codex native session unless the u
 - `/new`: create a fresh Codex session and rebind current conversation
 - `/resume`: reconnect to latest or specified Codex session
 - `/stop`: cancel the active Codex run, not the whole binding
-- `/status`: show workspace, session id, and run state
+- `/status`: show project, session id, and run state
 
-## Workspace policy
+## Project policy
 
 Initial policy should be simple:
 
-- one configured root workspace
-- optional named workspace shortcuts later
+- one configured root project
+- optional named project shortcuts later
 - no arbitrary escape outside configured root by default
 
 ## Non-goals

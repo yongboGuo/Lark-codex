@@ -43,10 +43,19 @@ mkdir -p "${CONFIG_DIR}" "${SYSTEMD_DIR}"
 
 if [[ ! -f "${ENV_PATH}" ]]; then
   cp "${ENV_TEMPLATE}" "${ENV_PATH}"
-  sed -i \
-    -e "s|\$HOME|${USER_HOME}|g" \
-    -e "s|/volumes/ws/codex-feishu-bridge|${ROOT_DIR}|g" \
-    "${ENV_PATH}"
+  python3 - "${ENV_PATH}" "${USER_HOME}" "${ROOT_DIR}" <<'PY'
+from pathlib import Path
+import sys
+
+env_path = Path(sys.argv[1])
+user_home = sys.argv[2]
+root_dir = sys.argv[3]
+text = env_path.read_text()
+text = text.replace("$HOME", user_home)
+text = text.replace("DEFAULT_PROJECT=" + user_home, "DEFAULT_PROJECT=" + root_dir)
+text = text.replace("PROJECT_ALLOWED_ROOTS=" + user_home, "PROJECT_ALLOWED_ROOTS=" + root_dir)
+env_path.write_text(text)
+PY
 fi
 
 if [[ ! -f "${JSON_PATH}" ]]; then

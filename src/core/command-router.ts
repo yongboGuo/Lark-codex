@@ -7,8 +7,11 @@ export type CommandName =
   | "resume"
   | "sessions"
   | "stop"
-  | "workspace"
-  | "approvals";
+  | "project"
+  | "approvals"
+  | "search"
+  | "model"
+  | "profile";
 
 export interface ParsedCommand {
   name: CommandName;
@@ -19,7 +22,21 @@ export function parseCommand(message: IncomingMessage): ParsedCommand | undefine
   const text = message.text.trim();
   if (!text.startsWith("/")) return undefined;
   const [head, ...args] = text.slice(1).split(/\s+/);
-  if (["help", "status", "new", "resume", "sessions", "stop", "workspace", "approvals"].includes(head)) {
+  if (
+    [
+      "help",
+      "status",
+      "new",
+      "resume",
+      "sessions",
+      "stop",
+      "project",
+      "approvals",
+      "search",
+      "model",
+      "profile"
+    ].includes(head)
+  ) {
     return { name: head as CommandName, args };
   }
   return undefined;

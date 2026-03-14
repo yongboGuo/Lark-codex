@@ -66,7 +66,7 @@ export interface ConversationResolution {
 
 export interface CommandDecision {
   kind: "command" | "turn";
-  command?: "help" | "status" | "new" | "resume" | "stop" | "workspace";
+  command?: "help" | "status" | "new" | "resume" | "stop" | "project";
   args?: string[];
 }
 
@@ -100,7 +100,7 @@ Initial policy:
 
 ### 3. Decide command vs turn
 The orchestrator parses the input:
-- `/help` `/status` `/new` `/resume` `/stop` `/workspace` -> command path
+- `/help` `/status` `/new` `/resume` `/stop` `/project` -> command path
 - everything else -> Codex turn path
 
 ### 4. Resolve or create binding
@@ -143,7 +143,7 @@ Return supported commands and short usage.
 Return:
 - conversation key
 - native Codex session id if bound
-- workspace
+- project
 - active run state if any
 
 ### `/new`
@@ -159,8 +159,8 @@ Initial v1 may support:
 Stop the current active run for the conversation.
 Do not delete the session binding.
 
-### `/workspace`
-Show current workspace.
+### `/project`
+Show current project.
 Later may support controlled switching within configured root.
 
 ## Strong v1 policies
@@ -183,7 +183,7 @@ Resume errors should remain explicit.
 The orchestrator should turn internal failures into user-visible, bounded errors.
 
 Examples:
-- workspace invalid
+- project invalid
 - no active run to stop
 - bound session missing in Codex
 - Codex launch failure
@@ -239,7 +239,7 @@ The orchestrator depends on two small stores.
 ### Binding store
 Persistent:
 - conversation key -> native Codex session id
-- workspace
+- project
 - timestamps
 
 ### Active run store

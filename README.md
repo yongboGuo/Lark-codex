@@ -41,7 +41,7 @@ Thin Feishu-native relay for Codex native sessions.
 - `/resume`
 - `/sessions`
 - `/stop`
-- `/workspace`
+- `/project`
 - `/approvals`
 
 ## Status
@@ -51,8 +51,8 @@ Working v1 bridge:
 - Feishu long-connection receive/send
 - DM text in / text out
 - conversation to native Codex session binding
-- `/help` `/status` `/new` `/resume <session-id>` `/sessions [n]` `/stop` `/workspace` `/approvals`
-- `/workspace <path>` to rebind a conversation to another directory under `WORKSPACE_ROOT`
+- `/help` `/status` `/new` `/resume <session-id>` `/sessions list` `/stop` `/project` `/approvals`
+- `/project <path>` to rebind a conversation to another directory under `PROJECT_ALLOWED_ROOTS`
 - `/approvals auto|full-access` to switch the Codex sandbox mode used for future runs
 - backend modes: `spawn` now, `terminal` reserved as experimental
 
@@ -88,6 +88,10 @@ npm run install:local
   `~/.config/systemd/user/codex-feishu-bridge.service`
 - It preserves existing `~/.config/codex-feishu-bridge/bridge.env` and `config.json` if they
   already exist.
+- Machine-specific proxy or custom CA settings should live in
+  `~/.config/codex-feishu-bridge/bridge.env`, not in the repo-owned systemd unit template.
+- Project access is controlled by `PROJECT_ALLOWED_ROOTS`. `DEFAULT_PROJECT` must stay under
+  one of those allowed roots.
 - On a fresh install, `~/.config/codex-feishu-bridge/config.json` defaults
   `CODEX_SANDBOX_MODE` to `danger-full-access`. Change that file if you want
   `workspace-write` instead.

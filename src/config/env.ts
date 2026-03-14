@@ -34,6 +34,8 @@ export interface AppConfig {
     profileMode: "isolated" | "personal";
     backendMode: "spawn" | "terminal";
     sandboxMode: "workspace-write" | "danger-full-access";
+    sessionListDefaultCount: number;
+    sessionAllDefaultCount: number;
     runTimeoutMs: number;
     spawnStatusIntervalMs: number;
     terminalRenderMode: "markdown" | "plain";
@@ -41,9 +43,9 @@ export interface AppConfig {
     terminalFlushMaxChars: number;
     terminalStartupTimeoutMs: number;
   };
-  workspace: {
-    root: string;
-    defaultWorkspace: string;
+  project: {
+    allowedRoots: string[];
+    defaultProject: string;
   };
   storePath: string;
 }
@@ -51,11 +53,15 @@ export interface AppConfig {
 export function loadConfig(): AppConfig {
   const jsonConfig = loadJsonConfig(process.env.BRIDGE_CONFIG_JSON);
   const nodeEnv = optional("NODE_ENV", "development");
-  const workspaceRoot = path.resolve(readSetting("WORKSPACE_ROOT", process.cwd(), jsonConfig));
-  const defaultWorkspace = path.resolve(readSetting("DEFAULT_WORKSPACE", process.cwd(), jsonConfig));
-  const relativeWorkspace = path.relative(workspaceRoot, defaultWorkspace);
-  if (relativeWorkspace.startsWith("..") || path.isAbsolute(relativeWorkspace)) {
-    throw new Error(`DEFAULT_WORKSPACE must stay under WORKSPACE_ROOT: ${defaultWorkspace}`);
+  const defaultProject = path.resolve(readSetting("DEFAULT_PROJECT", process.cwd(), jsonConfig));
+  const projectAllowedRoots = parseRootsSetting(
+    readSetting("PROJECT_ALLOWED_ROOTS", "", jsonConfig),
+    defaultProject
+  );
+  if (!isUnderAnyRoot(defaultProject, projectAllowedRoots)) {
+    throw new Error(
+      `DEFAULT_PROJECT must stay under PROJECT_ALLOWED_ROOTS: ${defaultProject}`
+    );
   }
 
   const homeDir = process.env.HOME || "/tmp";
@@ -94,6 +100,18 @@ export function loadConfig(): AppConfig {
         readSetting("CODEX_SANDBOX_MODE", "workspace-write", jsonConfig) === "danger-full-access"
           ? "danger-full-access"
           : "workspace-write",
+      sessionListDefaultCount: readIntegerSetting(
+        "CODEX_SESSION_LIST_DEFAULT_COUNT",
+        "20",
+        jsonConfig,
+        { min: 1 }
+      ),
+      sessionAllDefaultCount: readIntegerSetting(
+        "CODEX_SESSION_ALL_DEFAULT_COUNT",
+        "100",
+        jsonConfig,
+        { min: 1 }
+      ),
       runTimeoutMs: readIntegerSetting("CODEX_RUN_TIMEOUT_MS", "600000", jsonConfig, { min: 0 }),
       spawnStatusIntervalMs: readIntegerSetting("SPAWN_STATUS_INTERVAL_MS", "15000", jsonConfig, {
         min: 0
@@ -111,9 +129,9 @@ export function loadConfig(): AppConfig {
         { min: 1 }
       )
     },
-    workspace: {
-      root: workspaceRoot,
-      defaultWorkspace
+    project: {
+      allowedRoots: projectAllowedRoots,
+      defaultProject
     },
     storePath: readSetting("STORE_PATH", ".data/bindings.json", jsonConfig)
   };
@@ -156,4 +174,20 @@ function loadJsonConfig(configPath?: string): JsonConfigShape | undefined {
   const parsed = JSON.parse(raw) as JsonConfigShape;
   parsed.__path = resolved;
   return parsed;
+}
+
+function parseRootsSetting(raw: string, primaryRoot: string): string[] {
+  const parts = raw
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => path.resolve(part));
+  return Array.from(new Set([path.resolve(primaryRoot), ...parts]));
+}
+
+function isUnderAnyRoot(target: string, roots: string[]): boolean {
+  return roots.some((root) => {
+    const relative = path.relative(root, target);
+    return !relative.startsWith("..") && !path.isAbsolute(relative);
+  });
 }

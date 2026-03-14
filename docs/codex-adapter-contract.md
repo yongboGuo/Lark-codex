@@ -32,18 +32,18 @@ export type CodexRunId = string;
 
 export interface CodexSessionRef {
   sessionId: CodexSessionId;
-  workspace: string;
+  project: string;
 }
 
 export interface CodexCreateSessionInput {
-  workspace: string;
+  project: string;
   model?: string;
   sandbox?: "read-only" | "workspace-write" | "danger-full-access";
 }
 
 export interface CodexResumeSessionInput {
   sessionId: CodexSessionId;
-  workspace: string;
+  project: string;
 }
 
 export interface CodexAttachment {
@@ -55,7 +55,7 @@ export interface CodexAttachment {
 
 export interface CodexTurnInput {
   sessionId: CodexSessionId;
-  workspace: string;
+  project: string;
   userText: string;
   attachments?: CodexAttachment[];
   model?: string;
@@ -110,7 +110,7 @@ Creates a **real native Codex session**.
 Rules:
 - must return a real Codex session id
 - must not create a bridge-only fake session id
-- workspace must be explicit
+- project must be explicit
 
 ### `resumeSession(input)`
 
@@ -189,7 +189,7 @@ The bridge may store only minimal metadata like:
 interface SessionBinding {
   conversationKey: string;
   codexSessionId: string;
-  workspace: string;
+  project: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -214,7 +214,7 @@ The bridge should not store:
 
 Return clear hard errors for cases like:
 - session not found
-- invalid workspace
+- invalid project
 - Codex binary unavailable
 - launch timeout
 

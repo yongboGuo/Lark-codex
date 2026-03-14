@@ -27,7 +27,7 @@ It must not:
 Each record should contain only:
 - `conversationKey`
 - `codexSessionId`
-- `workspace`
+- `project`
 - timestamps
 - optional small audit metadata if truly useful
 
@@ -37,7 +37,7 @@ Each record should contain only:
 export interface SessionBinding {
   conversationKey: string;
   codexSessionId: string;
-  workspace: string;
+  project: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -93,8 +93,8 @@ There must be only one binding per `conversationKey`.
 ### No fake session ids
 `codexSessionId` must always be a real native Codex session id.
 
-### Workspace explicitness
-`workspace` must be explicit even if it equals the default workspace.
+### Project explicitness
+`project` must be explicit even if it equals the default project.
 
 This keeps the stored binding self-describing.
 
@@ -104,7 +104,7 @@ This keeps the stored binding self-describing.
 {
   "conversationKey": "p2p:oc_xxx",
   "codexSessionId": "8f1d2a3b-...",
-  "workspace": "/volumes/ws/codex-feishu-bridge",
+  "project": "/path/to/project",
   "createdAt": "2026-03-22T03:00:00.000Z",
   "updatedAt": "2026-03-22T03:12:00.000Z"
 }
@@ -122,7 +122,7 @@ Example shape:
     {
       "conversationKey": "p2p:oc_xxx",
       "codexSessionId": "session_123",
-      "workspace": "/volumes/ws/codex-feishu-bridge",
+      "project": "/path/to/project",
       "createdAt": "2026-03-22T03:00:00.000Z",
       "updatedAt": "2026-03-22T03:12:00.000Z"
     }
@@ -154,7 +154,7 @@ Keep active run state separate.
 Persistent, slow-changing metadata:
 - conversation key
 - session id
-- workspace
+- project
 - timestamps
 
 ### Active run store
