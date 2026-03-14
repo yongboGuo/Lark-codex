@@ -78,6 +78,9 @@ npm run install:local
 
 - Repo-owned systemd template: `deploy/systemd/codex-feishu-bridge.service.in`
 - User config templates: `deploy/config/bridge.env.example` and `deploy/config/config.json`
+- Optional startup-ready notification: set `FEISHU_STARTUP_NOTIFY_CHAT_ID` in `bridge.env`
+  to get a one-time Feishu message after the websocket is connected and outbound
+  message sending is working.
 - Install or update the user service with:
 
 ```bash

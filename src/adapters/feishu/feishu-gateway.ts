@@ -6,18 +6,14 @@ type MessageHandler = (message: IncomingMessage) => Promise<void>;
 const FEISHU_POST_SOFT_LIMIT = 3500;
 
 export class FeishuGateway {
-  private readonly client: Lark.Client;
-  private readonly wsClient: Lark.WSClient;
+  private client: Lark.Client;
+  private wsClient: Lark.WSClient;
   private readonly recentMessages = new Map<string, number>();
   private cleanupTimer?: NodeJS.Timeout;
 
   constructor(private readonly config: AppConfig["feishu"]) {
-    const baseConfig = {
-      appId: this.config.appId,
-      appSecret: this.config.appSecret
-    };
-    this.client = new Lark.Client(baseConfig);
-    this.wsClient = new Lark.WSClient(baseConfig);
+    this.client = this.createClient();
+    this.wsClient = this.createWsClient();
   }
 
   async start(onMessage: MessageHandler): Promise<void> {
@@ -85,6 +81,14 @@ export class FeishuGateway {
     }
   }
 
+  async sendStartupReady(text: string): Promise<void> {
+    if (!this.config.startupNotifyChatId) return;
+    await this.send({
+      chatId: this.config.startupNotifyChatId,
+      text
+    });
+  }
+
   exampleIncoming(text: string): IncomingMessage {
     return {
       messageId: "local-example",
@@ -128,6 +132,9 @@ export class FeishuGateway {
         return;
       } catch (error) {
         lastError = error;
+        if (shouldResetFeishuClient(error)) {
+          this.client = this.createClient();
+        }
         if (!shouldRetryFeishuError(error) || attempt >= attempts) {
           break;
         }
@@ -147,6 +154,20 @@ export class FeishuGateway {
     throw new Error(
       `Feishu send failed after ${attempts} attempt${attempts === 1 ? "" : "s"}${configuredAttempts === 0 ? " (retry disabled)" : ""}: ${formatFeishuError(lastError)}`
     );
+  }
+
+  private createClient(): Lark.Client {
+    return new Lark.Client({
+      appId: this.config.appId,
+      appSecret: this.config.appSecret
+    });
+  }
+
+  private createWsClient(): Lark.WSClient {
+    return new Lark.WSClient({
+      appId: this.config.appId,
+      appSecret: this.config.appSecret
+    });
   }
 }
 
@@ -247,6 +268,124 @@ function flattenFeishuPostContent(content: unknown[]): string {
 function splitMessageText(text: string, maxChars: number): string[] {
   if (maxChars <= 0 || text.length <= maxChars) return [text];
 
+  const blocks = splitMarkdownBlocks(text);
+  const chunks: string[] = [];
+  let current = "";
+
+  const pushCurrent = (): void => {
+    const value = current.trim();
+    if (value) chunks.push(value);
+    current = "";
+  };
+
+  for (const block of blocks) {
+    if (!block.trim()) continue;
+    if (block.length > maxChars) {
+      pushCurrent();
+      chunks.push(...splitOversizedMarkdownBlock(block, maxChars));
+      continue;
+    }
+
+    const candidate = current ? `${current}\n\n${block}` : block;
+    if (candidate.length <= maxChars) {
+      current = candidate;
+      continue;
+    }
+
+    pushCurrent();
+    current = block;
+  }
+
+  pushCurrent();
+  return chunks.length > 0 ? chunks : [text];
+}
+
+function buildMarkdownPostContent(text: string): string {
+  const rendered = text.trim();
+  const fenced = wrapRawMarkdown(rendered);
+  return JSON.stringify({
+    zh_cn: {
+      content: [[{ tag: "md", text: `${rendered}\n\n${fenced}` }]]
+    }
+  });
+}
+
+function wrapRawMarkdown(text: string): string {
+  const longestBacktickRun = Math.max(
+    0,
+    ...Array.from(text.matchAll(/`+/g), (match) => match[0].length)
+  );
+  const fence = "`".repeat(Math.max(4, longestBacktickRun + 1));
+  return `${fence}markdown\n${text}\n${fence}`;
+}
+
+function splitMarkdownBlocks(text: string): string[] {
+  const normalized = text.replace(/\r\n/g, "\n");
+  const blocks: string[] = [];
+  const lines = normalized.split("\n");
+  let current: string[] = [];
+  let inFence = false;
+  let fenceMarker = "";
+
+  const flush = (): void => {
+    const block = current.join("\n").trim();
+    if (block) blocks.push(block);
+    current = [];
+  };
+
+  for (const line of lines) {
+    const fenceInfo = parseFenceLine(line);
+    if (fenceInfo && !inFence) {
+      flush();
+      inFence = true;
+      fenceMarker = fenceInfo.marker;
+      current.push(line);
+      continue;
+    }
+    if (inFence) {
+      current.push(line);
+      if (fenceInfo && fenceInfo.marker === fenceMarker) {
+        flush();
+        inFence = false;
+        fenceMarker = "";
+      }
+      continue;
+    }
+    if (!line.trim()) {
+      flush();
+      continue;
+    }
+    current.push(line);
+  }
+
+  flush();
+  return blocks;
+}
+
+function splitOversizedMarkdownBlock(block: string, maxChars: number): string[] {
+  const fenceInfo = parseFenceLine(block.split("\n", 1)[0] || "");
+  if (!fenceInfo) {
+    return splitPlainTextBlock(block, maxChars);
+  }
+
+  const lines = block.split("\n");
+  const closingIndex = findClosingFenceIndex(lines, fenceInfo.marker);
+  if (closingIndex <= 0) {
+    return splitPlainTextBlock(block, maxChars);
+  }
+
+  const opening = lines[0];
+  const closing = lines[closingIndex];
+  const body = lines.slice(1, closingIndex).join("\n");
+  const wrapperCost = opening.length + closing.length + 2;
+  const innerMax = Math.max(1, maxChars - wrapperCost);
+  const innerChunks = splitPlainTextBlock(body, innerMax);
+  return innerChunks.map((chunk) => `${opening}\n${chunk}\n${closing}`);
+}
+
+function splitPlainTextBlock(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) return [text];
+
   const chunks: string[] = [];
   let remaining = text;
   while (remaining.length > maxChars) {
@@ -255,17 +394,22 @@ function splitMessageText(text: string, maxChars: number): string[] {
     remaining = remaining.slice(splitAt).trimStart();
   }
   if (remaining) chunks.push(remaining);
-  return chunks.length > 0 ? chunks : [text];
+  return chunks;
 }
 
-function buildMarkdownPostContent(text: string): string {
-  const rendered = text.trim();
-  const fenced = `\`\`\`markdown\n${rendered}\n\`\`\``;
-  return JSON.stringify({
-    zh_cn: {
-      content: [[{ tag: "md", text: `${rendered}\n\n${fenced}` }]]
+function parseFenceLine(line: string): { marker: string } | undefined {
+  const match = line.match(/^(`{3,}|~{3,})/);
+  if (!match) return undefined;
+  return { marker: match[1] };
+}
+
+function findClosingFenceIndex(lines: string[], marker: string): number {
+  for (let index = 1; index < lines.length; index += 1) {
+    if (lines[index].startsWith(marker)) {
+      return index;
     }
-  });
+  }
+  return -1;
 }
 
 function pickSplitPoint(text: string, maxChars: number): number {
@@ -326,6 +470,8 @@ function shouldRetryFeishuError(error: unknown): boolean {
   if (typeof status === "number" && status >= 500) return true;
 
   return (
+    error.message.includes("tenant_access_token") ||
+    error.message.includes("socket hang up") ||
     maybe.code === "ECONNRESET" ||
     maybe.code === "ECONNABORTED" ||
     maybe.code === "ETIMEDOUT" ||
@@ -334,6 +480,10 @@ function shouldRetryFeishuError(error: unknown): boolean {
     maybe.code === "ERR_NETWORK" ||
     maybe.code === "ERR_BAD_RESPONSE"
   );
+}
+
+function shouldResetFeishuClient(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("tenant_access_token");
 }
 
 function computeRetryDelayMs(

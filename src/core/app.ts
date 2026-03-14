@@ -1,6 +1,8 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { CodexBackend } from "../adapters/codex/backend.js";
 import { createCodexBackend } from "../adapters/codex/codex-runtime.js";
 import { FeishuGateway } from "../adapters/feishu/feishu-gateway.js";
@@ -12,6 +14,10 @@ import { ActiveRun, IncomingMessage, SessionBinding } from "../types/domain.js";
 import { getSessionSummary, listRecentSessions } from "../adapters/codex/session-files.js";
 import { listTrustedProjects } from "../adapters/codex/project-files.js";
 import { getCodexRuntimeMeta } from "../adapters/codex/runtime-meta.js";
+
+const execFileAsync = promisify(execFile);
+const GIT_COMMAND_TIMEOUT_MS = 30_000;
+const GIT_OUTPUT_SOFT_LIMIT = 12_000;
 
 export class App {
   private readonly store: BindingStore;
@@ -97,6 +103,16 @@ export class App {
         }
       }
     });
+    if (this.config.feishu.startupNotifyChatId) {
+      try {
+        await this.feishu.sendStartupReady(this.buildStartupReadyMessage());
+        console.log("Feishu startup ready notification sent", {
+          chatId: this.config.feishu.startupNotifyChatId
+        });
+      } catch (error) {
+        console.error("failed to send Feishu startup ready notification", error);
+      }
+    }
   }
 
   async handleIncoming(
@@ -119,6 +135,8 @@ export class App {
         "- `/resume [--last|<session-id>|-n N|-h|--all] [--all-projects] [-C|--cd <dir>]` bind the latest session by default, optionally switching project",
         "- `/stop` stop the current active run",
         "- `/project [list [--all|--trusted]|bind [-n N|-m|--mkdir <path>|<path>]|-h]` show, list, or bind projects",
+        "- `/git [args...]` run `git` in the current bound project; use `/git -h` for bridge usage",
+        "- `/pwd`, `/ls [args...]`, `/cat <path...>`, `/tree [args...]`, `/find [args...]`, `/rg [args...]` run local project commands",
         "- `/approvals [auto|full-access]` show or change Codex approvals",
         "- `/search [on|off]` show or change live web search for this conversation",
         "- `/model [name|clear]` show or change the Codex model for this conversation",
@@ -446,6 +464,32 @@ export class App {
       ].join("\n");
     }
 
+    if (command?.name === "git") {
+      const project = binding?.project || this.config.project.defaultProject;
+      if (command.args.length === 0 || command.args[0] === "-h" || command.args[0] === "--help") {
+        return this.gitHelpText();
+      }
+      await sendEarlyUpdate(`running git in project \`${project}\`...`);
+      return this.runGitCommand(project, command.args);
+    }
+
+    if (
+      command?.name === "pwd" ||
+      command?.name === "ls" ||
+      command?.name === "cat" ||
+      command?.name === "tree" ||
+      command?.name === "find" ||
+      command?.name === "rg"
+    ) {
+      const localCommandName = command.name;
+      const project = binding?.project || this.config.project.defaultProject;
+      if (localCommandName !== "pwd" && (command.args[0] === "-h" || command.args[0] === "--help")) {
+        return this.localCommandHelpText(localCommandName);
+      }
+      await sendEarlyUpdate(`running ${localCommandName} in project \`${project}\`...`);
+      return this.runLocalCommand(localCommandName, project, command.args);
+    }
+
     if (command?.name === "approvals") {
       if (command.args.length === 0) {
         return [
@@ -614,6 +658,18 @@ export class App {
     } finally {
       this.activeRuns.delete(key);
     }
+  }
+
+  private buildStartupReadyMessage(): string {
+    return [
+      "# Bridge Ready",
+      "",
+      `- **backend**: \`${this.codex.mode}\``,
+      `- **profile**: \`${this.config.codex.profileMode}\``,
+      `- **project**: \`${this.config.project.defaultProject}\``,
+      `- **sandbox**: \`${this.config.codex.sandboxMode}\``,
+      `- **search default**: \`${this.config.project.defaultSearchEnabled ? "on" : "off"}\``
+    ].join("\n");
   }
 
   private makeBinding(
@@ -819,6 +875,58 @@ export class App {
     ].join("\n");
   }
 
+  private gitHelpText(): string {
+    return [
+      "# Git",
+      "",
+      "Run `git` directly in the current bound project.",
+      "",
+      "## Usage",
+      "",
+      "- `/git status`",
+      "- `/git branch --all`",
+      "- `/git log --oneline -n 20`",
+      "- `/git diff`",
+      "- `/git diff --cached`",
+      "- `/git show HEAD~1`",
+      "- `/git add <path>`",
+      "- `/git commit -m message`",
+      "- `/git push`",
+      "- `/git -h`",
+      "",
+      "## Notes",
+      "",
+      "- The command runs in the current bound project from `/project`.",
+      "- Arguments are passed directly to `git` after `/git`.",
+      "- Chat parsing is whitespace-based, so shell quoting is limited."
+    ].join("\n");
+  }
+
+  private localCommandHelpText(name: "pwd" | "ls" | "cat" | "tree" | "find" | "rg"): string {
+    const examples: Record<typeof name, string[]> = {
+      pwd: ["- `/pwd`"],
+      ls: ["- `/ls`", "- `/ls -la`", "- `/ls src`"],
+      cat: ["- `/cat README.md`", "- `/cat src/core/app.ts`"],
+      tree: ["- `/tree`", "- `/tree -L 2`", "- `/tree src`"],
+      find: ["- `/find . -maxdepth 2 -type f`", "- `/find src -name '*.ts'`"],
+      rg: ["- `/rg TODO`", "- `/rg handleIncoming src`", "- `/rg --files src`"]
+    };
+    return [
+      `# ${name.toUpperCase()}`,
+      "",
+      `Run \`${name}\` directly in the current bound project.`,
+      "",
+      "## Usage",
+      "",
+      ...examples[name],
+      "",
+      "## Notes",
+      "",
+      "- Arguments are passed directly without a shell.",
+      "- Redirection and shell operators like `>`, `|`, `&&`, and `;` are not interpreted."
+    ].join("\n");
+  }
+
   private resumeHelpText(): string {
     return [
       "# Resume",
@@ -969,6 +1077,98 @@ export class App {
     }
     return lines.join("\n");
   }
+
+  private async runGitCommand(project: string, args: string[]): Promise<string> {
+    const gitArgs = [...args];
+    const commandText = ["git", ...gitArgs].join(" ");
+    try {
+      const { stdout, stderr } = await execFileAsync("git", gitArgs, {
+        cwd: project,
+        timeout: GIT_COMMAND_TIMEOUT_MS,
+        maxBuffer: 8 * 1024 * 1024
+      });
+      const combined = [stdout, stderr].filter(Boolean).join(stderr && stdout ? "\n" : "");
+      return [
+        "# Git",
+        "",
+        `- **project**: \`${project}\``,
+        `- **command**: \`${commandText}\``,
+        "",
+        "```text",
+        truncateOutput(combined || "(no output)"),
+        "```"
+      ].join("\n");
+    } catch (error) {
+      const maybe = error as Error & {
+        code?: number | string;
+        stdout?: string;
+        stderr?: string;
+        signal?: NodeJS.Signals;
+      };
+      const output = [maybe.stdout, maybe.stderr].filter(Boolean).join(maybe.stdout && maybe.stderr ? "\n" : "");
+      return [
+        "# Git",
+        "",
+        `- **project**: \`${project}\``,
+        `- **command**: \`${commandText}\``,
+        `- **status**: \`failed\``,
+        `- **code**: \`${String(maybe.code ?? "(unknown)")}\``,
+        ...(maybe.signal ? [`- **signal**: \`${maybe.signal}\``] : []),
+        "",
+        "```text",
+        truncateOutput(output || maybe.message || "git command failed"),
+        "```"
+      ].join("\n");
+    }
+  }
+
+  private async runLocalCommand(
+    command: "pwd" | "ls" | "cat" | "tree" | "find" | "rg",
+    project: string,
+    args: string[]
+  ): Promise<string> {
+    const commandText = [command, ...args].join(" ");
+    const execArgs = command === "pwd" ? [] : [...args];
+    try {
+      const { stdout, stderr } = await execFileAsync(command, execArgs, {
+        cwd: project,
+        timeout: GIT_COMMAND_TIMEOUT_MS,
+        maxBuffer: 8 * 1024 * 1024
+      });
+      const combined = [stdout, stderr].filter(Boolean).join(stderr && stdout ? "\n" : "");
+      return [
+        `# ${command.toUpperCase()}`,
+        "",
+        `- **project**: \`${project}\``,
+        `- **command**: \`${commandText || command}\``,
+        "",
+        "```text",
+        truncateOutput(combined || "(no output)"),
+        "```"
+      ].join("\n");
+    } catch (error) {
+      const maybe = error as Error & {
+        code?: number | string;
+        stdout?: string;
+        stderr?: string;
+        signal?: NodeJS.Signals;
+      };
+      const output = [maybe.stdout, maybe.stderr].filter(Boolean).join(maybe.stdout && maybe.stderr ? "\n" : "");
+      return [
+        `# ${command.toUpperCase()}`,
+        "",
+        `- **project**: \`${project}\``,
+        `- **command**: \`${commandText || command}\``,
+        `- **status**: \`failed\``,
+        `- **code**: \`${String(maybe.code ?? "(unknown)")}\``,
+        ...(maybe.signal ? [`- **signal**: \`${maybe.signal}\``] : []),
+        "",
+        "```text",
+        truncateOutput(output || maybe.message || `${command} command failed`),
+        "```"
+      ].join("\n");
+    }
+  }
 }
 
 interface ProjectListEntry {
@@ -980,4 +1180,9 @@ interface ProjectListEntry {
 
 function escapeMarkdownCell(value: string): string {
   return value.replace(/\|/g, "\\|").replace(/\n/g, " ").trim();
+}
+
+function truncateOutput(value: string): string {
+  if (value.length <= GIT_OUTPUT_SOFT_LIMIT) return value;
+  return `${value.slice(0, GIT_OUTPUT_SOFT_LIMIT)}\n\n[output truncated]`;
 }

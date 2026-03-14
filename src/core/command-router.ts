@@ -8,6 +8,13 @@ export type CommandName =
   | "session"
   | "stop"
   | "project"
+  | "git"
+  | "pwd"
+  | "ls"
+  | "cat"
+  | "tree"
+  | "find"
+  | "rg"
   | "approvals"
   | "search"
   | "model"
@@ -31,6 +38,13 @@ export function parseCommand(message: IncomingMessage): ParsedCommand | undefine
       "session",
       "stop",
       "project",
+      "git",
+      "pwd",
+      "ls",
+      "cat",
+      "tree",
+      "find",
+      "rg",
       "approvals",
       "search",
       "model",

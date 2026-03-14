@@ -33,7 +33,18 @@ rm -rf dist
 npm install
 npm run build
 PACK_FILE="$(npm pack --json | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['filename'])")"
-npm install -g "./${PACK_FILE}"
+GLOBAL_PREFIX="$(npm prefix -g)"
+GLOBAL_ROOT="$(npm root -g)"
+GLOBAL_PKG_DIR="${GLOBAL_ROOT}/codex-feishu-bridge"
+GLOBAL_BIN_DIR="${GLOBAL_PREFIX}/bin"
+
+mkdir -p "${GLOBAL_ROOT}" "${GLOBAL_BIN_DIR}"
+mv "${GLOBAL_PKG_DIR}" "${GLOBAL_PKG_DIR}.bak.$(date +%s)" 2>/dev/null || true
+mkdir -p "${GLOBAL_PKG_DIR}"
+tar -xzf "./${PACK_FILE}" -C "${GLOBAL_PKG_DIR}" --strip-components=1
+cp -a node_modules "${GLOBAL_PKG_DIR}/"
+ln -sf "${GLOBAL_PKG_DIR}/bin/codex-feishu-bridge.js" "${GLOBAL_BIN_DIR}/codex-feishu-bridge"
+chmod +x "${GLOBAL_PKG_DIR}/bin/codex-feishu-bridge.js" "${GLOBAL_BIN_DIR}/codex-feishu-bridge"
 rm -f "${PACK_FILE}"
 
 BIN_PATH="$(command -v codex-feishu-bridge || true)"

@@ -25,6 +25,7 @@ export interface AppConfig {
     appId: string;
     appSecret: string;
     botOpenId: string;
+    startupNotifyChatId?: string;
     connectionMode: "websocket";
     sendRetryMaxAttempts: number;
     sendRetryBaseDelayMs: number;
@@ -94,6 +95,7 @@ export function loadConfig(): AppConfig {
       appId: required("FEISHU_APP_ID"),
       appSecret: required("FEISHU_APP_SECRET"),
       botOpenId: required("FEISHU_BOT_OPEN_ID"),
+      startupNotifyChatId: optional("FEISHU_STARTUP_NOTIFY_CHAT_ID", "").trim() || undefined,
       connectionMode: "websocket",
       sendRetryMaxAttempts: readIntegerSetting("FEISHU_SEND_RETRY_MAX_ATTEMPTS", "5", jsonConfig, {
         min: 0
