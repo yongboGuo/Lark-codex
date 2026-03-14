@@ -1,0 +1,35 @@
+export type FeishuConversationKey = string;
+export type CodexSessionId = string;
+
+export interface SessionBinding {
+  conversationKey: FeishuConversationKey;
+  codexSessionId: CodexSessionId;
+  workspace: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ActiveRun {
+  conversationKey: FeishuConversationKey;
+  codexSessionId: CodexSessionId;
+  runId: string;
+  startedAt: string;
+  status: "running" | "stopping";
+}
+
+export interface IncomingMessage {
+  messageId: string;
+  chatId: string;
+  chatType: "p2p" | "group" | "unknown";
+  threadId?: string;
+  rootId?: string;
+  senderOpenId?: string;
+  text: string;
+}
+
+export interface OutgoingMessage {
+  chatId: string;
+  text: string;
+  replyToMessageId?: string;
+  threadId?: string;
+}
