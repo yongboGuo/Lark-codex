@@ -96,7 +96,7 @@ export class App {
         "- `/help` show commands",
         "- `/status` show current session and run state",
         "- `/new` create and bind a fresh Codex session",
-        "- `/sessions [list [-n N|--all] [--all-projects]|-h|--help]` show the current bound session, list recent sessions, or show sessions help",
+        "- `/session [list [-n N|--all] [--all-projects]|-h|--help]` show the current bound session, list recent sessions, or show session help",
         "- `/resume [--last|<session-id>|-n N|-h|--all] [--all-projects] [-C|--cd <dir>]` bind the latest session by default, optionally switching project",
         "- `/stop` stop the current active run",
         "- `/project [list [--all|--trusted]|bind [-n N|-m|--mkdir <path>|<path>]|-h]` show, list, or bind projects",
@@ -218,7 +218,7 @@ export class App {
         );
         const selected = sessions[index - 1];
         if (!selected) {
-          return `session index out of range: ${index}. Use \`/sessions list${allProjects ? " --all-projects" : ""} --all\` first.`;
+          return `session index out of range: ${index}. Use \`/session list${allProjects ? " --all-projects" : ""} --all\` first.`;
         }
         targetSessionId = selected.sessionId;
         resumeSource = "indexed";
@@ -228,7 +228,7 @@ export class App {
       }
 
       if (!targetSessionId) {
-        return `No native Codex session found${allProjects ? "" : " for the current project"}. Use \`/sessions list${allProjects ? " --all-projects" : ""}\` or \`/resume <session-id>\`.`;
+        return `No native Codex session found${allProjects ? "" : " for the current project"}. Use \`/session list${allProjects ? " --all-projects" : ""}\` or \`/resume <session-id>\`.`;
       }
       const sessionExists = await this.codex.getSession(targetSessionId);
       if (!sessionExists) {
@@ -256,7 +256,7 @@ export class App {
       ].join("\n");
     }
 
-    if (command?.name === "sessions") {
+    if (command?.name === "session") {
       const sessionArgs = [...command.args];
       const allProjects = this.consumeFlag(sessionArgs, "--all-projects");
       if (sessionArgs[0] === "-h" || sessionArgs[0] === "--help") {
@@ -280,7 +280,7 @@ export class App {
       }
 
       if (!existing?.codexSessionId) {
-        return "No session is currently bound. Use `/new`, `/resume`, or `/sessions list`.";
+        return "No session is currently bound. Use `/new`, `/resume`, or `/session list`.";
       }
       const session = await getSessionSummary(this.config.codex.sessionsDir, existing.codexSessionId);
       return [
@@ -784,12 +784,12 @@ export class App {
       "## Notes",
       "",
       "- `/resume` and `/resume --last` both bind the most recent recorded native Codex session for the current project.",
-      "- `/resume -n <index>` binds the Nth session from the current `/sessions list` ordering.",
+      "- `/resume -n <index>` binds the Nth session from the current `/session list` ordering.",
       "- `/resume <session-id>` binds a specific native session id.",
       "- `-C, --cd <dir>` switches the bound project while resuming the session.",
       "- `--all-projects` expands browsing beyond the current project.",
       "- `/resume --all` shows the recent sessions list for the current project in Feishu instead of opening an interactive picker.",
-      `- In Feishu, use \`/sessions list --all\` for the default current-project list of \`${this.config.codex.sessionAllDefaultCount}\` sessions, or \`/sessions list --all --all-projects\` to browse across projects.`,
+      `- In Feishu, use \`/session list --all\` for the default current-project list of \`${this.config.codex.sessionAllDefaultCount}\` sessions, or \`/session list --all --all-projects\` to browse across projects.`,
       "- Index-based resume is order-dependent and should be treated as a convenience, not a stable identifier.",
       "- Native Codex flags like `--config`, `--remote`, `--image`, `--model`, `--sandbox`, and prompt arguments are not exposed on this bridge command."
     ].join("\n");
@@ -797,26 +797,26 @@ export class App {
 
   private sessionsHelpText(): string {
     return [
-      "# Sessions",
+      "# Session",
       "",
       "Inspect the current bound session or browse recent native Codex sessions.",
       "",
       "## Usage",
       "",
-      "- `/sessions`",
-      "- `/sessions list`",
-      "- `/sessions list -n 12`",
-      "- `/sessions list --all`",
-      "- `/sessions list --all-projects`",
-      "- `/sessions -h`",
+      "- `/session`",
+      "- `/session list`",
+      "- `/session list -n 12`",
+      "- `/session list --all`",
+      "- `/session list --all-projects`",
+      "- `/session -h`",
       "",
       "## Notes",
       "",
-      "- `/sessions` shows the current bound session for this conversation.",
-      "- `/sessions list` shows recent native Codex sessions for the current project.",
+      "- `/session` shows the current bound session for this conversation.",
+      "- `/session list` shows recent native Codex sessions for the current project.",
       "- `--all-projects` expands the list across `CODEX_SESSIONS_DIR`.",
-      `- \`/sessions list\` defaults to \`${this.config.codex.sessionListDefaultCount}\` sessions for the current project.`,
-      `- \`/sessions list --all\` uses the default count \`${this.config.codex.sessionAllDefaultCount}\` for the current project.`,
+      `- \`/session list\` defaults to \`${this.config.codex.sessionListDefaultCount}\` sessions for the current project.`,
+      `- \`/session list --all\` uses the default count \`${this.config.codex.sessionAllDefaultCount}\` for the current project.`,
       `- \`-n\` accepts values from \`1\` to \`${this.config.codex.sessionAllDefaultCount}\`.`,
       "- Use `/resume <session-id>` to bind one of the listed sessions."
     ].join("\n");

@@ -39,7 +39,7 @@ Thin Feishu-native relay for Codex native sessions.
 - `/status`
 - `/new`
 - `/resume`
-- `/sessions`
+- `/session`
 - `/stop`
 - `/project`
 - `/approvals`
@@ -51,7 +51,7 @@ Working v1 bridge:
 - Feishu long-connection receive/send
 - DM text in / text out
 - conversation to native Codex session binding
-- `/help` `/status` `/new` `/resume <session-id>` `/sessions list` `/stop` `/project` `/approvals`
+- `/help` `/status` `/new` `/resume <session-id>` `/session list` `/stop` `/project` `/approvals`
 - `/project <path>` to rebind a conversation to another directory under `PROJECT_ALLOWED_ROOTS`
 - `/approvals auto|full-access` to switch the Codex sandbox mode used for future runs
 - backend modes: `spawn` now, `app-server` and `terminal` reserved as experimental
