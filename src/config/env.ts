@@ -26,6 +26,10 @@ export interface AppConfig {
     appSecret: string;
     botOpenId: string;
     connectionMode: "websocket";
+    sendRetryMaxAttempts: number;
+    sendRetryBaseDelayMs: number;
+    sendRetryMultiplier: number;
+    sendRetryMaxDelayMs: number;
   };
   codex: {
     bin: string;
@@ -88,10 +92,22 @@ export function loadConfig(): AppConfig {
       appId: required("FEISHU_APP_ID"),
       appSecret: required("FEISHU_APP_SECRET"),
       botOpenId: required("FEISHU_BOT_OPEN_ID"),
-      connectionMode: "websocket"
+      connectionMode: "websocket",
+      sendRetryMaxAttempts: readIntegerSetting("FEISHU_SEND_RETRY_MAX_ATTEMPTS", "5", jsonConfig, {
+        min: 0
+      }),
+      sendRetryBaseDelayMs: readIntegerSetting("FEISHU_SEND_RETRY_BASE_DELAY_MS", "1000", jsonConfig, {
+        min: 0
+      }),
+      sendRetryMultiplier: readNumberSetting("FEISHU_SEND_RETRY_MULTIPLIER", "2", jsonConfig, {
+        min: 1
+      }),
+      sendRetryMaxDelayMs: readIntegerSetting("FEISHU_SEND_RETRY_MAX_DELAY_MS", "10000", jsonConfig, {
+        min: 0
+      })
     },
     codex: {
-      bin: readSetting("CODEX_BIN", "/opt/node/bin/codex", jsonConfig),
+      bin: readSetting("CODEX_BIN", "codex", jsonConfig),
       home: readSetting("CODEX_HOME", defaultCodexHome, jsonConfig),
       sessionsDir: readSetting("CODEX_SESSIONS_DIR", path.join(defaultCodexHome, "sessions"), jsonConfig),
       profileMode: codexProfileMode,
@@ -160,6 +176,20 @@ function readIntegerSetting(
   const value = Number(raw);
   if (!Number.isInteger(value) || value < options.min) {
     throw new Error(`${name} must be an integer >= ${options.min}: ${JSON.stringify(raw)}`);
+  }
+  return value;
+}
+
+function readNumberSetting(
+  name: string,
+  fallback: string,
+  jsonConfig: JsonConfigShape | undefined,
+  options: { min: number }
+): number {
+  const raw = readSetting(name, fallback, jsonConfig);
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < options.min) {
+    throw new Error(`${name} must be a number >= ${options.min}: ${JSON.stringify(raw)}`);
   }
   return value;
 }

@@ -47,20 +47,7 @@ export class FeishuGateway {
   async send(message: OutgoingMessage): Promise<void> {
     const text = message.text || "";
     for (const chunk of splitMessageText(text, FEISHU_TEXT_SOFT_LIMIT)) {
-      try {
-        await this.client.im.v1.message.create({
-          params: {
-            receive_id_type: "chat_id"
-          },
-          data: {
-            receive_id: message.chatId,
-            msg_type: "text",
-            content: JSON.stringify({ text: chunk })
-          }
-        });
-      } catch (error) {
-        throw new Error(`Feishu send failed: ${formatFeishuError(error)}`);
-      }
+      await this.sendChunkWithRetry(message.chatId, chunk);
     }
   }
 
@@ -80,6 +67,47 @@ export class FeishuGateway {
         this.recentMessages.delete(key);
       }
     }
+  }
+
+  private async sendChunkWithRetry(chatId: string, chunk: string): Promise<void> {
+    let lastError: unknown;
+    const configuredAttempts = this.config.sendRetryMaxAttempts;
+    const attempts = Math.max(1, configuredAttempts);
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        await this.client.im.v1.message.create({
+          params: {
+            receive_id_type: "chat_id"
+          },
+          data: {
+            receive_id: chatId,
+            msg_type: "text",
+            content: JSON.stringify({ text: chunk })
+          }
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+        if (!shouldRetryFeishuError(error) || attempt >= attempts) {
+          break;
+        }
+        const delayMs = computeRetryDelayMs(
+          attempt,
+          this.config.sendRetryBaseDelayMs,
+          this.config.sendRetryMultiplier,
+          this.config.sendRetryMaxDelayMs
+        );
+        console.warn(
+          `Feishu send retry ${attempt}/${Math.max(0, attempts - 1)} in ${delayMs}ms: ${formatFeishuError(error)}`
+        );
+        await sleep(delayMs);
+      }
+    }
+
+    throw new Error(
+      `Feishu send failed after ${attempts} attempt${attempts === 1 ? "" : "s"}${configuredAttempts === 0 ? " (retry disabled)" : ""}: ${formatFeishuError(lastError)}`
+    );
   }
 }
 
@@ -172,6 +200,46 @@ function formatFeishuError(error: unknown): string {
   }
 
   return parts.join(" | ");
+}
+
+function shouldRetryFeishuError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+
+  const maybe = error as Error & {
+    code?: string;
+    response?: {
+      status?: number;
+    };
+  };
+
+  const status = maybe.response?.status;
+  if (status === 429) return true;
+  if (typeof status === "number" && status >= 500) return true;
+
+  return (
+    maybe.code === "ECONNRESET" ||
+    maybe.code === "ECONNABORTED" ||
+    maybe.code === "ETIMEDOUT" ||
+    maybe.code === "EAI_AGAIN" ||
+    maybe.code === "ENOTFOUND" ||
+    maybe.code === "ERR_NETWORK" ||
+    maybe.code === "ERR_BAD_RESPONSE"
+  );
+}
+
+function computeRetryDelayMs(
+  attempt: number,
+  baseDelayMs: number,
+  multiplier: number,
+  maxDelayMs: number
+): number {
+  const exponential = baseDelayMs * Math.max(1, multiplier ** (attempt - 1));
+  return Math.min(Math.round(exponential), maxDelayMs);
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function compactValue(value: unknown): string {

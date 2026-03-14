@@ -110,6 +110,7 @@ For local testing without Feishu, run `npm run cli -- --chat-id test-terminal`. 
 - The checked-in user-service JSON template defaults to `danger-full-access`.
 - `CODEX_RUN_TIMEOUT_MS` controls the maximum lifetime of one active Codex run before the bridge terminates it.
 - `SPAWN_STATUS_INTERVAL_MS` controls the heartbeat interval for long-running `spawn` turns. Set it to `0` to disable heartbeats.
+- `FEISHU_SEND_RETRY_MAX_ATTEMPTS`, `FEISHU_SEND_RETRY_BASE_DELAY_MS`, `FEISHU_SEND_RETRY_MULTIPLIER`, and `FEISHU_SEND_RETRY_MAX_DELAY_MS` control retry/backoff for transient Feishu send failures such as `502`, `429`, and short network errors. `FEISHU_SEND_RETRY_MAX_ATTEMPTS=0` means one send attempt with no retry.
 - `TERMINAL_FLUSH_IDLE_MS` controls the quiet window before terminal output is projected back to Feishu as one reply.
 - `TERMINAL_FLUSH_MAX_CHARS` caps one terminal-mode Feishu reply so noisy screens do not flood the chat.
 - Numeric config values must be integers. Invalid values now fail fast during startup.
