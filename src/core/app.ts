@@ -918,19 +918,22 @@ export class App {
     boundSessionId?: string,
     sortedByProject = false
   ): string {
-    const header = [
+    const lines = [
       `# ${title}`,
       "",
       sortedByProject ? "- sorted by: `project`, `time desc`" : "- sorted by: `time desc`",
-      "",
-      "| # | Bound | Project | Session | Time | About |",
-      "|---|---|---|---|---|---|"
+      ""
     ];
-    const rows = sessions.map((session, index) => {
-      const bound = session.sessionId === boundSessionId ? "yes" : "";
-      return `| ${index + 1} | ${bound} | \`${escapeMarkdownCell(session.cwd || "(unknown)")}\` | \`${escapeMarkdownCell(session.sessionId)}\` | ${escapeMarkdownCell(session.createdAt || "(unknown)")} | ${escapeMarkdownCell(session.preview || "")} |`;
-    });
-    return [...header, ...rows].join("\n");
+    for (const [index, session] of sessions.entries()) {
+      const flags = [session.sessionId === boundSessionId ? "bound" : ""].filter(Boolean);
+      lines.push(
+        `${index + 1}. \`${session.sessionId}\`${flags.length ? ` (${flags.join(", ")})` : ""}`
+      );
+      lines.push(`   - project: \`${escapeMarkdownCell(session.cwd || "(unknown)")}\``);
+      lines.push(`   - time: ${escapeMarkdownCell(session.createdAt || "(unknown)")}`);
+      lines.push(`   - about: ${escapeMarkdownCell(session.preview || "(no preview)")}`);
+    }
+    return lines.join("\n");
   }
 
   private sortSessionsForDisplay(

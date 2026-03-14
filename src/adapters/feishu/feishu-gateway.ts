@@ -3,7 +3,7 @@ import { AppConfig } from "../../config/env.js";
 import { IncomingMessage, OutgoingMessage } from "../../types/domain.js";
 
 type MessageHandler = (message: IncomingMessage) => Promise<void>;
-const FEISHU_TEXT_SOFT_LIMIT = 4000;
+const FEISHU_POST_SOFT_LIMIT = 3500;
 
 export class FeishuGateway {
   private readonly client: Lark.Client;
@@ -80,7 +80,7 @@ export class FeishuGateway {
 
   async send(message: OutgoingMessage): Promise<void> {
     const text = message.text || "";
-    for (const chunk of splitMessageText(text, FEISHU_TEXT_SOFT_LIMIT)) {
+    for (const chunk of splitMessageText(text, FEISHU_POST_SOFT_LIMIT)) {
       await this.sendChunkWithRetry(message.chatId, chunk);
     }
   }
@@ -116,8 +116,8 @@ export class FeishuGateway {
           },
           data: {
             receive_id: chatId,
-            msg_type: "text",
-            content: JSON.stringify({ text: chunk })
+            msg_type: "post",
+            content: buildMarkdownPostContent(chunk)
           }
         });
         console.log("Feishu outbound message sent", {
@@ -256,6 +256,16 @@ function splitMessageText(text: string, maxChars: number): string[] {
   }
   if (remaining) chunks.push(remaining);
   return chunks.length > 0 ? chunks : [text];
+}
+
+function buildMarkdownPostContent(text: string): string {
+  const rendered = text.trim();
+  const fenced = `\`\`\`markdown\n${rendered}\n\`\`\``;
+  return JSON.stringify({
+    zh_cn: {
+      content: [[{ tag: "md", text: `${rendered}\n\n${fenced}` }]]
+    }
+  });
 }
 
 function pickSplitPoint(text: string, maxChars: number): number {
