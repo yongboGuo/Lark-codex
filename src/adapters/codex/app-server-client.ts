@@ -2,9 +2,12 @@ import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import path from "node:path";
 import readline from "node:readline";
 import { AppConfig } from "../../config/env.js";
-import { CodexTurnOptions } from "./backend.js";
+import { CodexServerRequest, CodexTurnOptions } from "./backend.js";
 
 type NotificationHandler = (method: string, params: Record<string, unknown>) => void | Promise<void>;
+type ServerRequestHandler = (
+  request: CodexServerRequest
+) => Promise<Record<string, unknown> | undefined> | Record<string, unknown> | undefined;
 
 interface PendingRequest {
   resolve: (value: any) => void;
@@ -22,6 +25,7 @@ export class AppServerSessionClient {
   private stderrText = "";
   private stdoutLines?: readline.Interface;
   private stderrLines?: readline.Interface;
+  private serverRequestHandler?: ServerRequestHandler;
 
   constructor(
     private readonly config: AppConfig["codex"],
@@ -51,7 +55,7 @@ export class AppServerSessionClient {
     const result = await this.request("turn/start", {
       threadId: sessionId,
       cwd: this.project,
-      approvalPolicy: "never",
+      approvalPolicy: this.appServerApprovalPolicy(),
       ...(options?.model ? { model: options.model } : {}),
       input: [
         {
@@ -79,6 +83,10 @@ export class AppServerSessionClient {
 
   unsubscribe(handler: NotificationHandler): void {
     this.notificationHandlers.delete(handler);
+  }
+
+  setServerRequestHandler(handler: ServerRequestHandler | undefined): void {
+    this.serverRequestHandler = handler;
   }
 
   isAlive(): boolean {
@@ -223,6 +231,12 @@ export class AppServerSessionClient {
   ): Promise<void> {
     if (!this.child?.stdin) return;
 
+    const handled = await this.serverRequestHandler?.({ method, params });
+    if (handled) {
+      this.child.stdin.write(`${JSON.stringify({ id, result: handled })}\n`);
+      return;
+    }
+
     let result: Record<string, unknown>;
     switch (method) {
       case "item/commandExecution/requestApproval":
@@ -269,9 +283,19 @@ export class AppServerSessionClient {
       cwd: project,
       ...(options?.model ? { model: options.model } : {}),
       ...(config ? { config } : {}),
-      sandbox: this.config.sandboxMode,
-      approvalPolicy: "never"
+      sandbox: this.appServerSandboxMode(),
+      approvalPolicy: this.appServerApprovalPolicy()
     };
+  }
+
+  private appServerSandboxMode(): "workspace-write" | "danger-full-access" {
+    return this.config.sandboxMode === "danger-full-access"
+      ? "danger-full-access"
+      : "workspace-write";
+  }
+
+  private appServerApprovalPolicy(): "on-request" | "never" {
+    return this.config.sandboxMode === "danger-full-access" ? "never" : "on-request";
   }
 
   private failAll(error: Error): void {

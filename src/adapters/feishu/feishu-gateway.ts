@@ -3,6 +3,14 @@ import { AppConfig } from "../../config/env.js";
 import { IncomingMessage, OutgoingMessage } from "../../types/domain.js";
 
 type MessageHandler = (message: IncomingMessage) => Promise<void>;
+type ReconnectHandler = () => Promise<void> | void;
+type LarkLogger = {
+  error: (...msg: unknown[]) => void;
+  warn: (...msg: unknown[]) => void;
+  info: (...msg: unknown[]) => void;
+  debug: (...msg: unknown[]) => void;
+  trace: (...msg: unknown[]) => void;
+};
 const FEISHU_POST_SOFT_LIMIT = 3500;
 
 export class FeishuGateway {
@@ -10,13 +18,18 @@ export class FeishuGateway {
   private wsClient: Lark.WSClient;
   private readonly recentMessages = new Map<string, number>();
   private cleanupTimer?: NodeJS.Timeout;
+  private reconnecting = false;
+  private readyOnce = false;
+  private lastReconnectReadyAt = 0;
+  private reconnectHandler?: ReconnectHandler;
 
   constructor(private readonly config: AppConfig["feishu"]) {
     this.client = this.createClient();
     this.wsClient = this.createWsClient();
   }
 
-  async start(onMessage: MessageHandler): Promise<void> {
+  async start(onMessage: MessageHandler, onReconnect?: ReconnectHandler): Promise<void> {
+    this.reconnectHandler = onReconnect;
     this.cleanupTimer = setInterval(() => this.evictDedupCache(), 60_000);
     this.cleanupTimer.unref();
 
@@ -71,6 +84,7 @@ export class FeishuGateway {
     });
 
     await this.wsClient.start({ eventDispatcher: dispatcher });
+    this.onWsReady();
     console.log("Feishu websocket client connected.");
   }
 
@@ -173,15 +187,91 @@ export class FeishuGateway {
   private createClient(): Lark.Client {
     return new Lark.Client({
       appId: this.config.appId,
-      appSecret: this.config.appSecret
+      appSecret: this.config.appSecret,
+      logger: this.createLarkLogger()
     });
   }
 
   private createWsClient(): Lark.WSClient {
     return new Lark.WSClient({
       appId: this.config.appId,
-      appSecret: this.config.appSecret
+      appSecret: this.config.appSecret,
+      logger: this.createLarkLogger()
     });
+  }
+
+  private createLarkLogger(): LarkLogger {
+    const proxy = (level: "error" | "warn" | "info" | "debug" | "trace") =>
+      (...msg: unknown[]): void => {
+        this.observeWsLog(level, msg);
+        if (!this.shouldEmit(level)) return;
+        switch (level) {
+          case "error":
+            console.error(...msg);
+            return;
+          case "warn":
+            console.warn(...msg);
+            return;
+          case "info":
+            console.info(...msg);
+            return;
+          case "debug":
+            console.debug(...msg);
+            return;
+          default:
+            console.debug(...msg);
+        }
+      };
+    return {
+      error: proxy("error"),
+      warn: proxy("warn"),
+      info: proxy("info"),
+      debug: proxy("debug"),
+      trace: proxy("trace")
+    };
+  }
+
+  private observeWsLog(level: string, msg: unknown[]): void {
+    const scope = String(msg[0] || "");
+    const detail = String(msg[1] || "");
+    if (scope !== "[ws]") return;
+
+    if (detail === "reconnect") {
+      this.reconnecting = true;
+      return;
+    }
+    if (detail === "ws client ready" || detail === "reconnect success") {
+      this.onWsReady();
+      return;
+    }
+    if (level === "error" && detail === "connect failed") {
+      this.reconnecting = true;
+    }
+  }
+
+  private onWsReady(): void {
+    const wasReconnect = this.readyOnce && this.reconnecting;
+    this.readyOnce = true;
+    this.reconnecting = false;
+    if (!wasReconnect) return;
+
+    const now = Date.now();
+    if (now - this.lastReconnectReadyAt < this.config.reconnectReadyDebounceMs) {
+      return;
+    }
+    this.lastReconnectReadyAt = now;
+    void this.reconnectHandler?.();
+  }
+
+  private shouldEmit(level: "error" | "warn" | "info" | "debug" | "trace"): boolean {
+    const rank = {
+      error: 0,
+      warn: 1,
+      info: 2,
+      debug: 3,
+      trace: 4
+    } as const;
+    return rank[level] <= rank[this.config.wsLoggerLevel];
   }
 }
 
@@ -375,20 +465,29 @@ function buildCardSummary(title: string | undefined, rendered: string): string {
 }
 
 function buildCardMetaMarkdown(title: string | undefined): string {
-  const parts = ["**bridge:** `codex-feishu-bridge`"];
-  if (title?.trim()) {
-    parts.push(`**title:** \`${title.trim()}\``);
-  }
-  parts.push(
-    `**time:** \`${new Date().toLocaleTimeString("en-GB", { hour12: false })}\``
-  );
-  return parts.join("  ");
+  return `\`${formatIsoTimestamp(new Date())}\``;
 }
 
 function formatChunkFooter(footer: string | undefined, index: number, total: number): string | undefined {
   const chunk = total > 1 ? `chunk ${index + 1}/${total}` : "";
   if (footer && chunk) return `${footer}  |  ${chunk}`;
   return footer || chunk || undefined;
+}
+
+function formatIsoTimestamp(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  const millis = String(date.getMilliseconds()).padStart(3, "0");
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absoluteOffset = Math.abs(offsetMinutes);
+  const offsetHours = String(Math.floor(absoluteOffset / 60)).padStart(2, "0");
+  const offsetMins = String(absoluteOffset % 60).padStart(2, "0");
+  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${millis}${sign}${offsetHours}:${offsetMins}`;
 }
 
 

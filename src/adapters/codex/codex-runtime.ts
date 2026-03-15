@@ -92,6 +92,9 @@ class AppServerCodexBackend implements CodexBackend {
     await ensureProject(project);
     const runId = randomUUID();
     const clientInfo = await this.getOrCreateClient(project, sessionId, options);
+    if (this.hasActiveRunForClient(clientInfo.client)) {
+      throw new Error(`Codex session ${clientInfo.sessionId} already has an active run.`);
+    }
     const resolvedSessionId = clientInfo.sessionId;
     let lastActivityAt = Date.now();
 
@@ -118,6 +121,7 @@ class AppServerCodexBackend implements CodexBackend {
       sessionId: resolvedSessionId,
       cancelled: false
     };
+    active.client.setServerRequestHandler(async (request) => hooks?.onServerRequest?.(request));
     if (this.config.runTimeoutMs > 0) {
       active.timeout = setTimeout(() => {
         void this.stop(runId);
@@ -147,6 +151,7 @@ class AppServerCodexBackend implements CodexBackend {
         settled = true;
         if (active.timeout) clearTimeout(active.timeout);
         if (active.heartbeat) clearInterval(active.heartbeat);
+        active.client.setServerRequestHandler(undefined);
         this.activeRuns.delete(runId);
         active.client.unsubscribe(handleNotification);
         this.scheduleClientShutdown(project, resolvedSessionId, active.client);

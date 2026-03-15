@@ -27,6 +27,8 @@ export interface AppConfig {
     botOpenId: string;
     startupNotifyChatId?: string;
     connectionMode: "websocket";
+    wsLoggerLevel: "error" | "warn" | "info" | "debug" | "trace";
+    reconnectReadyDebounceMs: number;
     sendRetryMaxAttempts: number;
     sendRetryBaseDelayMs: number;
     sendRetryMultiplier: number;
@@ -38,10 +40,11 @@ export interface AppConfig {
     sessionsDir: string;
     profileMode: "isolated" | "personal";
     backendMode: "spawn" | "terminal" | "app-server";
-    sandboxMode: "workspace-write" | "danger-full-access";
+    sandboxMode: "default" | "workspace-write" | "danger-full-access";
     sessionListDefaultCount: number;
     sessionAllDefaultCount: number;
     runTimeoutMs: number;
+    approvalTimeoutMs: number;
     spawnStatusIntervalMs: number;
     statusIncludeProject: boolean;
     terminalRenderMode: "markdown" | "plain";
@@ -64,6 +67,8 @@ interface JsonConfigShape {
     logLevel?: unknown;
   };
   feishu?: {
+    wsLoggerLevel?: unknown;
+    reconnectReadyDebounceMs?: unknown;
     sendRetry?: {
       maxAttempts?: unknown;
       baseDelayMs?: unknown;
@@ -79,6 +84,7 @@ interface JsonConfigShape {
     backendMode?: unknown;
     sandboxMode?: unknown;
     runTimeoutMs?: unknown;
+    approvalTimeoutMs?: unknown;
     spawn?: {
       statusIntervalMs?: unknown;
     };
@@ -159,6 +165,16 @@ export function loadConfig(): AppConfig {
       botOpenId: required("FEISHU_BOT_OPEN_ID"),
       startupNotifyChatId: optional("FEISHU_STARTUP_NOTIFY_CHAT_ID", "").trim() || undefined,
       connectionMode: "websocket",
+      wsLoggerLevel: normalizeFeishuLoggerLevel(
+        readTextSetting("FEISHU_WS_LOGGER_LEVEL", "info", jsonConfig, ["feishu", "wsLoggerLevel"])
+      ),
+      reconnectReadyDebounceMs: readIntegerSetting(
+        "FEISHU_RECONNECT_READY_DEBOUNCE_MS",
+        60000,
+        jsonConfig,
+        ["feishu", "reconnectReadyDebounceMs"],
+        { min: 0 }
+      ),
       sendRetryMaxAttempts: readIntegerSetting(
         "FEISHU_SEND_RETRY_MAX_ATTEMPTS",
         5,
@@ -204,11 +220,9 @@ export function loadConfig(): AppConfig {
           : codexBackendMode === "app-server"
             ? "app-server"
             : "spawn",
-      sandboxMode:
-        readTextSetting("CODEX_SANDBOX_MODE", "workspace-write", jsonConfig, ["codex", "sandboxMode"]) ===
-        "danger-full-access"
-          ? "danger-full-access"
-          : "workspace-write",
+      sandboxMode: normalizeApprovalMode(
+        readTextSetting("CODEX_SANDBOX_MODE", "workspace-write", jsonConfig, ["codex", "sandboxMode"])
+      ),
       sessionListDefaultCount: readIntegerSetting(
         "CODEX_SESSION_LIST_DEFAULT_COUNT",
         20,
@@ -229,6 +243,13 @@ export function loadConfig(): AppConfig {
         jsonConfig,
         ["codex", "runTimeoutMs"],
         { min: 0 }
+      ),
+      approvalTimeoutMs: readIntegerSetting(
+        "CODEX_APPROVAL_TIMEOUT_MS",
+        180000,
+        jsonConfig,
+        ["codex", "approvalTimeoutMs"],
+        { min: 1000 }
       ),
       spawnStatusIntervalMs: readIntegerSetting(
         "SPAWN_STATUS_INTERVAL_MS",
@@ -285,6 +306,30 @@ export function loadConfig(): AppConfig {
     },
     storePath: readTextSetting("STORE_PATH", ".data/bindings.json", jsonConfig, ["paths", "storePath"])
   };
+}
+
+function normalizeApprovalMode(value: string): AppConfig["codex"]["sandboxMode"] {
+  const normalized = value.trim().toLowerCase();
+  if (["default", "ask", "on-request"].includes(normalized)) {
+    return "default";
+  }
+  if (["danger-full-access", "full-access", "danger", "bypass"].includes(normalized)) {
+    return "danger-full-access";
+  }
+  return "workspace-write";
+}
+
+function normalizeFeishuLoggerLevel(value: string): AppConfig["feishu"]["wsLoggerLevel"] {
+  const normalized = value.trim().toLowerCase();
+  switch (normalized) {
+    case "error":
+    case "warn":
+    case "debug":
+    case "trace":
+      return normalized;
+    default:
+      return "info";
+  }
 }
 
 function readIntegerSetting(

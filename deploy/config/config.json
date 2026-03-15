@@ -4,6 +4,8 @@
     "port": 3300
   },
   "feishu": {
+    "wsLoggerLevel": "info",
+    "reconnectReadyDebounceMs": 60000,
     "sendRetry": {
       "maxAttempts": 5,
       "baseDelayMs": 1000,
@@ -16,9 +18,10 @@
     "profileMode": "isolated",
     "home": "$HOME/.codex-feishu-bridge",
     "sessionsDir": "$HOME/.codex-feishu-bridge/sessions",
-    "backendMode": "spawn",
-    "sandboxMode": "danger-full-access",
+    "backendMode": "app-server",
+    "sandboxMode": "default",
     "runTimeoutMs": 600000,
+    "approvalTimeoutMs": 180000,
     "spawn": {
       "statusIntervalMs": 30000
     },

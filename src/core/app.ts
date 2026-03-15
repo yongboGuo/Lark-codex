@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { CodexBackend } from "../adapters/codex/backend.js";
+import { CodexBackend, CodexServerRequest } from "../adapters/codex/backend.js";
 import { createCodexBackend } from "../adapters/codex/codex-runtime.js";
 import { FeishuGateway } from "../adapters/feishu/feishu-gateway.js";
 import { AppConfig } from "../config/env.js";
@@ -24,6 +24,7 @@ export class App {
   private readonly codex: CodexBackend;
   private feishu?: FeishuGateway;
   private readonly activeRuns = new Map<string, ActiveRun>();
+  private readonly pendingApprovals = new Map<string, PendingApproval>();
 
   constructor(private readonly config: AppConfig) {
     this.store = new BindingStore(path.resolve(this.config.storePath));
@@ -48,92 +49,85 @@ export class App {
       );
     }
     this.feishu = new FeishuGateway(this.config.feishu);
-    await this.feishu.start(async (message) => {
-      const command = parseCommand(message);
-      const currentBinding = await this.store.get(conversationKeyFor(message));
-      const messageTitle = this.titleForCommand(command?.name);
-      const messageTemplate = this.templateForCommand(command?.name);
-      const messageFooter = this.footerForMessage(command?.name, currentBinding);
-      const formatForFeishu = (text: string): string =>
-        command?.name ? this.stripLeadingMarkdownHeading(text) : text;
-      try {
-        let streamed = false;
-        let lastUpdateText: string | undefined;
-        const sendUpdateSafely = async (update: string): Promise<void> => {
-          try {
+    await this.feishu.start(
+      async (message) => {
+        const command = parseCommand(message);
+        const currentBinding = await this.store.get(conversationKeyFor(message));
+        const messageTitle = this.titleForCommand(command?.name);
+        const messageTemplate = this.templateForCommand(command?.name);
+        const messageFooter = this.footerForMessage(command?.name, currentBinding);
+        const formatForFeishu = (text: string): string =>
+          command?.name ? this.stripLeadingMarkdownHeading(text) : text;
+        try {
+          let streamed = false;
+          let lastUpdateText: string | undefined;
+          const sendUpdateSafely = async (update: string): Promise<void> => {
+            try {
+              await this.feishu?.send({
+                chatId: message.chatId,
+                title: messageTitle,
+                template: messageTemplate,
+                footer: messageFooter,
+                text: formatForFeishu(update),
+                replyToMessageId: message.messageId,
+                threadId: message.threadId
+              });
+              streamed = true;
+              lastUpdateText = formatForFeishu(update);
+            } catch (error) {
+              console.error("failed to send Feishu update", {
+                messageId: message.messageId,
+                chatId: message.chatId,
+                threadId: message.threadId,
+                textPreview: this.previewText(update),
+                error
+              });
+            }
+          };
+
+          const text = await this.handleIncoming(message, sendUpdateSafely);
+          const formattedText = formatForFeishu(text);
+          if ((formattedText && formattedText !== lastUpdateText) || !streamed) {
+            const finalFooter = command?.name ? messageFooter : this.footerForCodexReply(currentBinding);
             await this.feishu?.send({
               chatId: message.chatId,
               title: messageTitle,
               template: messageTemplate,
-              footer: messageFooter,
-              text: formatForFeishu(update),
+              footer: finalFooter,
+              text: formattedText,
               replyToMessageId: message.messageId,
               threadId: message.threadId
             });
-            streamed = true;
-            lastUpdateText = formatForFeishu(update);
-          } catch (error) {
-            console.error("failed to send Feishu update", {
-              messageId: message.messageId,
-              chatId: message.chatId,
-              threadId: message.threadId,
-              textPreview: this.previewText(update),
-              error
-            });
           }
-        };
-
-        const text = await this.handleIncoming(message, sendUpdateSafely);
-        const formattedText = formatForFeishu(text);
-        if ((formattedText && formattedText !== lastUpdateText) || !streamed) {
-          const finalFooter = command?.name ? messageFooter : this.footerForCodexReply(currentBinding);
-          await this.feishu?.send({
+          console.log("bridge handled message", {
+            messageId: message.messageId,
             chatId: message.chatId,
-            title: messageTitle,
-            template: messageTemplate,
-            footer: finalFooter,
-            text: formattedText,
-            replyToMessageId: message.messageId,
-            threadId: message.threadId
+            threadId: message.threadId,
+            streamed,
+            finalPreview: this.previewText(text)
           });
+        } catch (error) {
+          const text = error instanceof Error ? error.message : "Unknown bridge error.";
+          try {
+            await this.feishu?.send({
+              chatId: message.chatId,
+              title: messageTitle || "Bridge Error",
+              template: "red",
+              footer: this.buildIsoFooter(),
+              text: `bridge error: ${text}`,
+              replyToMessageId: message.messageId,
+              threadId: message.threadId
+            });
+          } catch (sendError) {
+            console.error("failed to send bridge error to Feishu", sendError);
+          }
         }
-        console.log("bridge handled message", {
-          messageId: message.messageId,
-          chatId: message.chatId,
-          threadId: message.threadId,
-          streamed,
-          finalPreview: this.previewText(text)
-        });
-      } catch (error) {
-        const text = error instanceof Error ? error.message : "Unknown bridge error.";
-        try {
-          await this.feishu?.send({
-            chatId: message.chatId,
-            title: messageTitle || "Bridge Error",
-            template: "red",
-            footer: this.buildIsoFooter(),
-            text: `bridge error: ${text}`,
-            replyToMessageId: message.messageId,
-            threadId: message.threadId
-          });
-        } catch (sendError) {
-          console.error("failed to send bridge error to Feishu", sendError);
-        }
+      },
+      async () => {
+        await this.sendStartupReadyNotification("Reconnected", "Feishu reconnect ready notification sent");
       }
-    });
-    if (this.config.feishu.startupNotifyChatId) {
-      try {
-        await this.feishu.sendStartupReady(
-          this.buildStartupReadyMessage(),
-          this.buildIsoFooter()
-        );
-        console.log("Feishu startup ready notification sent", {
-          chatId: this.config.feishu.startupNotifyChatId
-        });
-      } catch (error) {
-        console.error("failed to send Feishu startup ready notification", error);
-      }
-    }
+    );
+    await this.sendStartupReadyNotification("Bridge Ready", "Feishu startup ready notification sent");
   }
 
   async handleIncoming(
@@ -157,8 +151,9 @@ export class App {
         "- `/stop` stop the current active run",
         "- `/project [list [--all|--trusted]|bind [-n N|-m|--mkdir <path>|<path>]|-h]` show, list, or bind projects",
         "- `/git [args...]` run `git` in the current bound project; use `/git -h` for bridge usage",
+        "- `/log [-n N] [--since <expr>] [--grep <text>] [-h|--help]` show recent bridge service logs from systemd journal",
         "- `/pwd`, `/ls [args...]`, `/cat <path...>`, `/tree [args...]`, `/find [args...]`, `/rg [args...]` run local project commands",
-        "- `/approvals [auto|full-access]` show or change Codex approvals",
+        "- `/approvals [...]` show or change Codex approvals for the active backend",
         "- `/search [on|off]` show or change live web search for this conversation",
         "- `/model [name|clear]` show or change the Codex model for this conversation",
         "- `/profile [name|clear]` show or change the Codex profile for this conversation"
@@ -209,6 +204,21 @@ export class App {
         `- **session cwd**: \`${session?.cwd || "(unknown)"}\``,
         `- **session about**: ${session?.preview || "(no preview)"}`
       ].join("\n");
+    }
+
+    const pendingApproval = this.pendingApprovals.get(key);
+    if (pendingApproval) {
+      if (!command) {
+        return this.handleApprovalReply(key, pendingApproval, message.text);
+      }
+      if (!["help", "status", "stop"].includes(command.name)) {
+        return [
+          "# Approval Pending",
+          "",
+          `- **kind**: \`${pendingApproval.label}\``,
+          "- Reply in chat with one of the requested answers, or use `/stop` to cancel the active run."
+        ].join("\n");
+      }
     }
 
     if (command?.name === "resume") {
@@ -416,6 +426,7 @@ export class App {
       if (!activeRun) {
         return "No active run for this conversation.";
       }
+      this.cancelPendingApproval(key, "cancelled by /stop");
       await sendEarlyUpdate(`stopping run \`${activeRun.runId}\`...`);
       this.activeRuns.set(key, { ...activeRun, status: "stopping" });
       const stopped = await this.codex.stop(activeRun.runId);
@@ -505,6 +516,23 @@ export class App {
       ].join("\n");
     }
 
+    if (command?.name === "log") {
+      if (command.args[0] === "-h" || command.args[0] === "--help") {
+        return this.logHelpText();
+      }
+      const query = this.parseLogQuery(command.args);
+      if (query instanceof Error) {
+        return `# Log\n\n- **error**: ${query.message}\n- **usage**: \`/log [-n N] [--since <expr>] [--grep <text>]\``;
+      }
+      const filters = [
+        `last ${query.limit} lines`,
+        ...(query.since ? [`since \`${query.since}\``] : []),
+        ...(query.grep ? [`grep \`${query.grep}\``] : [])
+      ];
+      await sendEarlyUpdate(`reading ${filters.join(", ")} for \`codex-feishu-bridge.service\`...`);
+      return this.readBridgeLogs(query);
+    }
+
     if (command?.name === "git") {
       const project = binding?.project || this.config.project.defaultProject;
       if (command.args.length === 0 || command.args[0] === "-h" || command.args[0] === "--help") {
@@ -537,7 +565,7 @@ export class App {
           "# Approvals",
           "",
           `- **mode**: \`${this.config.codex.sandboxMode}\``,
-          "- **choices**: `auto`, `full-access`"
+          `- **choices**: ${this.approvalChoicesText()}`
         ].join("\n");
       }
       if (activeRun) {
@@ -549,7 +577,7 @@ export class App {
           "# Approvals",
           "",
           `- **error**: unknown mode \`${command.args.join(" ")}\``,
-          "- **choices**: `auto`, `full-access`"
+          `- **choices**: ${this.approvalChoicesText()}`
         ].join("\n");
       }
       await sendEarlyUpdate(`switching approvals to \`${nextMode}\`...`);
@@ -559,9 +587,7 @@ export class App {
         "# Approvals",
         "",
         `- **mode**: \`${nextMode}\``,
-        nextMode === "danger-full-access"
-          ? "- Codex will use `--dangerously-bypass-approvals-and-sandbox` on new runs."
-          : "- Codex will use `--full-auto` on new runs."
+        `- ${this.describeApprovalMode(nextMode)}`
       ].join("\n");
     }
 
@@ -678,7 +704,15 @@ export class App {
         this.resolveTurnOptions(binding),
         {
           onStatus: onUpdate,
-          onUpdate
+          onUpdate,
+          onServerRequest: (request) =>
+            this.requestApprovalFromFeishu(
+              key,
+              message,
+              project,
+              request,
+              onUpdate
+            )
         }
       );
       this.activeRuns.set(key, {
@@ -697,17 +731,36 @@ export class App {
       await this.store.put(nextBinding);
       return this.codex.mode === "terminal" && onUpdate ? "" : result.output;
     } finally {
+      this.cancelPendingApproval(key, "run finished");
       this.activeRuns.delete(key);
     }
   }
 
-  private buildStartupReadyMessage(): string {
+  private async sendStartupReadyNotification(title: string, logLabel: string): Promise<void> {
+    if (!this.config.feishu.startupNotifyChatId) return;
+    try {
+      const binding = await this.store.get(`p2p:${this.config.feishu.startupNotifyChatId}`);
+      await this.feishu?.sendStartupReady(
+        this.buildStartupReadyMessage(title, binding?.project),
+        this.buildIsoFooter()
+      );
+      console.log(logLabel, {
+        chatId: this.config.feishu.startupNotifyChatId,
+        currentProject: binding?.project
+      });
+    } catch (error) {
+      console.error(`failed to send ${title.toLowerCase()} notification`, error);
+    }
+  }
+
+  private buildStartupReadyMessage(title = "Bridge Ready", currentProject?: string): string {
     return [
-      "# Bridge Ready",
+      `# ${title}`,
       "",
       `- **backend**: \`${this.codex.mode}\``,
       `- **profile**: \`${this.config.codex.profileMode}\``,
-      `- **project**: \`${this.config.project.defaultProject}\``,
+      `- **default project**: \`${this.config.project.defaultProject}\``,
+      ...(currentProject ? [`- **current project**: \`${currentProject}\``] : []),
       `- **sandbox**: \`${this.config.codex.sandboxMode}\``,
       `- **search default**: \`${this.config.project.defaultSearchEnabled ? "on" : "off"}\``
     ].join("\n");
@@ -729,6 +782,8 @@ export class App {
         return "Stop";
       case "project":
         return "Project";
+      case "log":
+        return "Log";
       case "git":
         return "Git";
       case "pwd":
@@ -766,6 +821,7 @@ export class App {
       case "session":
       case "project":
       case "approvals":
+      case "log":
       case "search":
       case "model":
       case "profile":
@@ -894,11 +950,515 @@ export class App {
 
   private parseApprovalMode(value: string): AppConfig["codex"]["sandboxMode"] | undefined {
     const normalized = value.trim().toLowerCase();
+    if (["full-access", "danger-full-access", "danger", "bypass"].includes(normalized)) {
+      return "danger-full-access";
+    }
+    if (this.codex.mode === "app-server") {
+      if (["auto", "default", "ask", "on-request"].includes(normalized)) {
+        return "default";
+      }
+      return undefined;
+    }
     if (["auto", "workspace-write", "workspace", "safe"].includes(normalized)) {
       return "workspace-write";
     }
-    if (["full-access", "danger-full-access", "danger", "bypass"].includes(normalized)) {
-      return "danger-full-access";
+    if (normalized === "default") {
+      return "workspace-write";
+    }
+    return undefined;
+  }
+
+  private approvalChoicesText(): string {
+    return this.codex.mode === "app-server"
+      ? "`auto`, `default`, `full-access`"
+      : "`auto`, `workspace`, `full-access`";
+  }
+
+  private describeApprovalMode(mode: AppConfig["codex"]["sandboxMode"]): string {
+    if (this.codex.mode === "app-server") {
+      if (mode === "danger-full-access") {
+        return "Codex app-server will use `approvalPolicy=never` with `sandbox=danger-full-access` on new runs.";
+      }
+      return "Codex app-server will use `approvalPolicy=on-request` with `sandbox=workspace-write` on new runs.";
+    }
+    if (mode === "danger-full-access") {
+      return "Codex will use `--dangerously-bypass-approvals-and-sandbox` on new runs.";
+    }
+    return "Codex will use `--full-auto` on new runs.";
+  }
+
+  private async requestApprovalFromFeishu(
+    key: string,
+    message: IncomingMessage,
+    project: string,
+    request: CodexServerRequest,
+    onUpdate?: (text: string) => Promise<void>
+  ): Promise<Record<string, unknown> | undefined> {
+    const pending = this.buildPendingApproval(request, project);
+    if (!pending) {
+      return undefined;
+    }
+
+    this.cancelPendingApproval(key, "superseded by a newer request");
+
+    const promise = new Promise<Record<string, unknown>>((resolve) => {
+      pending.resolve = resolve;
+    });
+    pending.timer = setTimeout(() => {
+      if (this.pendingApprovals.get(key) !== pending) return;
+      this.pendingApprovals.delete(key);
+      pending.resolve?.(pending.timeoutResult);
+      void this.sendApprovalMessage(
+        message,
+        "Approval Timed Out",
+        "red",
+        [
+          "# Approval Timed Out",
+          "",
+          `- **kind**: \`${pending.label}\``,
+          `- **timeout**: \`${Math.round(this.config.codex.approvalTimeoutMs / 1000)}s\``,
+          "- Codex was sent a timeout-safe response."
+        ].join("\n")
+      );
+    }, this.config.codex.approvalTimeoutMs);
+    pending.timer.unref();
+
+    this.pendingApprovals.set(key, pending);
+    await this.sendApprovalMessage(message, pending.title, "orange", pending.prompt, onUpdate);
+    return promise;
+  }
+
+  private async sendApprovalMessage(
+    message: IncomingMessage,
+    title: string,
+    template: OutgoingMessage["template"],
+    text: string,
+    onUpdate?: (text: string) => Promise<void>
+  ): Promise<void> {
+    if (this.feishu) {
+      await this.feishu.send({
+        chatId: message.chatId,
+        title,
+        template,
+        footer: this.buildIsoFooter(),
+        text,
+        replyToMessageId: message.messageId,
+        threadId: message.threadId
+      });
+      return;
+    }
+    if (onUpdate) {
+      await onUpdate(text);
+    }
+  }
+
+  private handleApprovalReply(
+    key: string,
+    pending: PendingApproval,
+    text: string
+  ): string {
+    const parsed = pending.parse(text);
+    if (!parsed.ok) {
+      return [
+        "# Approval Reply",
+        "",
+        `- **error**: ${parsed.error}`,
+        "- Reply again with one of the listed answers, or use `/stop` to cancel the run."
+      ].join("\n");
+    }
+
+    this.pendingApprovals.delete(key);
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.resolve?.(parsed.result || {});
+    return this.renderApprovalAck(pending.label, parsed.result || {}, parsed.summary);
+  }
+
+  private cancelPendingApproval(key: string, reason: string): void {
+    const pending = this.pendingApprovals.get(key);
+    if (!pending) return;
+    this.pendingApprovals.delete(key);
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.resolve?.(pending.cancelResult);
+    console.log("pending approval cancelled", {
+      conversationKey: key,
+      label: pending.label,
+      reason
+    });
+  }
+
+  private renderApprovalAck(
+    label: string,
+    result: Record<string, unknown>,
+    summary?: string
+  ): string {
+    const decision = typeof result.decision === "string" ? result.decision : undefined;
+    const scope = typeof result.scope === "string" ? result.scope : undefined;
+    if (decision === "accept" || decision === "approved") {
+      return "# Approval Reply\n\nApproved this time. Passing to Codex...";
+    }
+    if (decision === "acceptForSession" || decision === "approved_for_session") {
+      return "# Approval Reply\n\nApproved for this session. Passing to Codex...";
+    }
+    if (decision === "decline" || decision === "denied") {
+      return "# Approval Reply\n\nDeclined. Sent to Codex.";
+    }
+    if (decision === "cancel" || decision === "abort") {
+      return "# Approval Reply\n\nCancelled. Sent to Codex.";
+    }
+    if ("permissions" in result) {
+      return `# Approval Reply\n\nGranted permission${scope === "session" ? "s for this session" : "s for this turn"}. Passing to Codex...`;
+    }
+    if ("answers" in result || "content" in result || "action" in result) {
+      return "# Approval Reply\n\nReply sent to Codex.";
+    }
+    return [
+      "# Approval Reply",
+      "",
+      `- **kind**: \`${label}\``,
+      `- **answer**: ${summary || "`sent`"}`
+    ].join("\n");
+  }
+
+  private buildPendingApproval(
+    request: CodexServerRequest,
+    project: string
+  ): PendingApproval | undefined {
+    switch (request.method) {
+      case "item/commandExecution/requestApproval":
+        return this.buildCommandApproval(request, project);
+      case "execCommandApproval":
+        return this.buildCommandApproval(request, project, true);
+      case "item/fileChange/requestApproval":
+        return this.buildFileApproval(request, project);
+      case "applyPatchApproval":
+        return this.buildFileApproval(request, project, true);
+      case "item/permissions/requestApproval":
+        return this.buildPermissionsApproval(request, project);
+      case "item/tool/requestUserInput":
+        return this.buildToolInputRequest(request, project);
+      case "mcpServer/elicitation/request":
+        return this.buildMcpElicitationRequest(request, project);
+      default:
+        return undefined;
+    }
+  }
+
+  private buildCommandApproval(
+    request: CodexServerRequest,
+    project: string,
+    legacy = false
+  ): PendingApproval {
+    console.debug("codex command approval request", request);
+    const command = this.readString(request.params.command) ||
+      readStringArray(request.params.command)?.join(" ") ||
+      "(unknown command)";
+    const cwd = this.readString(request.params.cwd) || project;
+    const reason = this.readString(request.params.reason);
+    const available = this.readDecisionChoices(request.params.availableDecisions);
+    const choices = available.length > 0
+      ? available
+      : [
+          { label: "allow once", aliases: ["1", "approve", "allow", "yes"], result: { decision: legacy ? "approved" : "accept" } },
+          { label: "allow for session", aliases: ["2", "session"], result: { decision: legacy ? "approved_for_session" : "acceptForSession" } },
+          { label: "deny", aliases: ["3", "deny", "no"], result: { decision: legacy ? "denied" : "decline" } },
+          { label: "cancel", aliases: ["4", "cancel", "abort"], result: { decision: legacy ? "abort" : "cancel" } }
+        ];
+    return this.makePendingApproval({
+      label: "command approval",
+      prompt: [
+        "# Approval Required",
+        "",
+        "Would you like to run the following command?",
+        "",
+        ...(reason ? [`Reason: ${reason}`, ""] : []),
+        "```sh",
+        command,
+        "```",
+        ...(cwd !== project ? ["", `cwd: \`${cwd}\``] : []),
+        "",
+        "## Reply",
+        "",
+        ...choices.map((choice, index) => `- \`${index + 1}\` ${choice.label}${choice.hint ? ` (${choice.hint})` : ""}`),
+        `- You can also reply with the label text, for example ${choices.map((choice) => `\`${choice.aliases.find((alias) => !/^\d+$/.test(alias)) || choice.label}\``).join(", ")}.`
+      ].join("\n"),
+      parse: (text) => parseChoiceReply(text, choices),
+      timeoutResult: { decision: legacy ? "abort" : "cancel" },
+      cancelResult: { decision: legacy ? "abort" : "cancel" }
+    });
+  }
+
+  private buildFileApproval(
+    request: CodexServerRequest,
+    project: string,
+    legacy = false
+  ): PendingApproval {
+    const reason = this.readString(request.params.reason);
+    const grantRoot = this.readString(request.params.grantRoot);
+    const fileChanges = asObjectRecord(request.params.fileChanges);
+    const fileList = Object.keys(fileChanges).slice(0, 5);
+    const choices: ChoiceReply[] = [
+      { label: "allow once", aliases: ["1", "approve", "allow", "yes"], result: { decision: legacy ? "approved" : "accept" } },
+      { label: "allow for session", aliases: ["2", "session"], result: { decision: legacy ? "approved_for_session" : "acceptForSession" } },
+      { label: "deny", aliases: ["3", "deny", "no"], result: { decision: legacy ? "denied" : "decline" } },
+      { label: "cancel", aliases: ["4", "cancel", "abort"], result: { decision: legacy ? "abort" : "cancel" } }
+    ];
+    return this.makePendingApproval({
+      label: "file approval",
+      prompt: [
+        "# Approval Required",
+        "",
+        `- **kind**: \`file change\``,
+        `- **project**: \`${project}\``,
+        ...(reason ? [`- **reason**: ${reason}`] : []),
+        ...(grantRoot ? [`- **grant root**: \`${grantRoot}\``] : []),
+        ...(fileList.length > 0 ? [`- **files**: ${fileList.map((item) => `\`${item}\``).join(", ")}`] : []),
+        "",
+        "## Reply",
+        "",
+        ...choices.map((choice, index) => `- \`${index + 1}\` ${choice.label}`)
+      ].join("\n"),
+      parse: (text) => parseChoiceReply(text, choices),
+      timeoutResult: { decision: legacy ? "abort" : "cancel" },
+      cancelResult: { decision: legacy ? "abort" : "cancel" }
+    });
+  }
+
+  private buildPermissionsApproval(
+    request: CodexServerRequest,
+    project: string
+  ): PendingApproval {
+    const reason = this.readString(request.params.reason);
+    const permissions = asObjectRecord(request.params.permissions);
+    const items: Array<{ key: "network" | "fileSystem"; index: number; value: unknown }> = [];
+    if (permissions.network) {
+      items.push({ key: "network", index: 1, value: permissions.network });
+    }
+    if (permissions.fileSystem) {
+      items.push({ key: "fileSystem", index: permissions.network ? 2 : 1, value: permissions.fileSystem });
+    }
+    return this.makePendingApproval({
+      label: "permissions approval",
+      prompt: [
+        "# Approval Required",
+        "",
+        `- **kind**: \`permissions\``,
+        `- **project**: \`${project}\``,
+        ...(reason ? [`- **reason**: ${reason}`] : []),
+        ...items.map((item) => `- \`${item.index}\` ${item.key}`),
+        "",
+        "## Reply",
+        "",
+        "- Reply with `all`, `1`, `2`, or `1 2`.",
+        "- Add `session` to keep the grant for the session, for example `session all`.",
+        "- Reply `deny` or `cancel` to reject."
+      ].join("\n"),
+      parse: (text) => {
+        const normalized = normalizeApprovalReply(text);
+        if (matchesAny(normalized, ["deny", "decline", "no"])) {
+          return { ok: true, result: { permissions: {}, scope: "turn" }, summary: "`deny`" };
+        }
+        if (matchesAny(normalized, ["cancel", "abort"])) {
+          return { ok: true, result: { permissions: {}, scope: "turn" }, summary: "`cancel`" };
+        }
+        const scope = normalized.includes("session") ? "session" : "turn";
+        const numbers = parseNumberSelections(normalized);
+        const wantsAll = normalized.includes("all") || normalized.includes("approve") || normalized.includes("allow");
+        const granted: Record<string, unknown> = {};
+        for (const item of items) {
+          if (wantsAll || numbers.includes(item.index)) {
+            granted[item.key] = item.value;
+          }
+        }
+        if (Object.keys(granted).length === 0) {
+          return { ok: false, error: "no permission selection matched the request" };
+        }
+        return {
+          ok: true,
+          result: { permissions: granted, scope },
+          summary: `granted \`${Object.keys(granted).join(", ")}\` for \`${scope}\``
+        };
+      },
+      timeoutResult: { permissions: {}, scope: "turn" },
+      cancelResult: { permissions: {}, scope: "turn" }
+    });
+  }
+
+  private buildToolInputRequest(
+    request: CodexServerRequest,
+    project: string
+  ): PendingApproval {
+    const questions = Array.isArray(request.params.questions)
+      ? request.params.questions.filter((item): item is Record<string, unknown> => isRecord(item))
+      : [];
+    return this.makePendingApproval({
+      label: "user input",
+      prompt: [
+        "# User Input Required",
+        "",
+        `- **project**: \`${project}\``,
+        ...questions.flatMap((question, index) => this.renderToolQuestion(index + 1, question)),
+        "",
+        "## Reply",
+        "",
+        questions.length <= 1
+          ? "- Reply with an option number, option label, or free text."
+          : "- Reply one answer per line in the form `question_id=value`."
+      ].join("\n"),
+      parse: (text) => parseToolInputReply(text, questions),
+      timeoutResult: { answers: {} },
+      cancelResult: { answers: {} }
+    });
+  }
+
+  private buildMcpElicitationRequest(
+    request: CodexServerRequest,
+    project: string
+  ): PendingApproval {
+    const mode = this.readString(request.params.mode) || "form";
+    const message = this.readString(request.params.message) || "(no message)";
+    const url = this.readString(request.params.url);
+    const meta = request.params._meta ?? null;
+    return this.makePendingApproval({
+      label: "mcp elicitation",
+      prompt: [
+        "# User Input Required",
+        "",
+        `- **kind**: \`mcp elicitation\``,
+        `- **project**: \`${project}\``,
+        `- **mode**: \`${mode}\``,
+        `- **message**: ${message}`,
+        ...(url ? [`- **url**: ${url}`] : []),
+        "",
+        "## Reply",
+        "",
+        mode === "url"
+          ? "- Reply `accept`, `decline`, or `cancel`."
+          : "- Reply with a JSON object that matches the requested schema, or `decline` / `cancel`."
+      ].join("\n"),
+      parse: (text) => {
+        const normalized = normalizeApprovalReply(text);
+        if (matchesAny(normalized, ["decline", "deny", "no"])) {
+          return { ok: true, result: { action: "decline", content: null, _meta: meta }, summary: "`decline`" };
+        }
+        if (matchesAny(normalized, ["cancel", "abort"])) {
+          return { ok: true, result: { action: "cancel", content: null, _meta: meta }, summary: "`cancel`" };
+        }
+        if (mode === "url" && matchesAny(normalized, ["accept", "approve", "allow", "yes"])) {
+          return { ok: true, result: { action: "accept", content: null, _meta: meta }, summary: "`accept`" };
+        }
+        try {
+          const content = JSON.parse(text) as unknown;
+          return { ok: true, result: { action: "accept", content, _meta: meta }, summary: "`accept` with JSON content" };
+        } catch {
+          return { ok: false, error: mode === "url" ? "reply `accept`, `decline`, or `cancel`" : "reply with valid JSON, `decline`, or `cancel`" };
+        }
+      },
+      timeoutResult: { action: "cancel", content: null, _meta: meta },
+      cancelResult: { action: "cancel", content: null, _meta: meta }
+    });
+  }
+
+  private makePendingApproval(input: {
+    label: string;
+    prompt: string;
+    parse: PendingApproval["parse"];
+    timeoutResult: Record<string, unknown>;
+    cancelResult: Record<string, unknown>;
+  }): PendingApproval {
+    return {
+      title: input.label === "user input" ? "User Input Required" : "Approval Required",
+      label: input.label,
+      prompt: input.prompt,
+      parse: input.parse,
+      timeoutResult: input.timeoutResult,
+      cancelResult: input.cancelResult
+    };
+  }
+
+  private renderToolQuestion(index: number, question: Record<string, unknown>): string[] {
+    const id = this.readString(question.id) || `q${index}`;
+    const header = this.readString(question.header) || id;
+    const prompt = this.readString(question.question) || "(no question text)";
+    const options = Array.isArray(question.options)
+      ? question.options.filter((item): item is Record<string, unknown> => isRecord(item))
+      : [];
+    return [
+      `## ${index}. ${header}`,
+      "",
+      `- **id**: \`${id}\``,
+      `- **question**: ${prompt}`,
+      ...options.map((option, optionIndex) => {
+        const label = this.readString(option.label) || `option ${optionIndex + 1}`;
+        const description = this.readString(option.description);
+        return `- \`${optionIndex + 1}\` ${label}${description ? `: ${description}` : ""}`;
+      })
+    ];
+  }
+
+  private readString(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  }
+
+  private readDecisionChoices(value: unknown): ChoiceReply[] {
+    if (!Array.isArray(value)) return [];
+    const choices: ChoiceReply[] = [];
+    for (const [index, item] of value.entries()) {
+      const choice = this.mapDecisionChoice(item, index + 1);
+      if (choice) {
+        choices.push(choice);
+      }
+    }
+    return choices;
+  }
+
+  private mapDecisionChoice(item: unknown, index: number): ChoiceReply | undefined {
+    if (item === "accept") {
+      return {
+        label: "Yes, proceed",
+        aliases: [String(index), "y", "yes", "approve", "allow", "accept"],
+        result: { decision: "accept" },
+        hint: "y"
+      };
+    }
+    if (item === "acceptForSession") {
+      return {
+        label: "Yes, and don't ask again for this session",
+        aliases: [String(index), "p", "session", "persist", "accept for session"],
+        result: { decision: "acceptForSession" },
+        hint: "p"
+      };
+    }
+    if (item === "decline") {
+      return {
+        label: "No, decline",
+        aliases: [String(index), "n", "no", "deny", "decline"],
+        result: { decision: "decline" },
+        hint: "n"
+      };
+    }
+    if (item === "cancel") {
+      return {
+        label: "No, cancel",
+        aliases: [String(index), "esc", "cancel", "abort"],
+        result: { decision: "cancel" },
+        hint: "esc"
+      };
+    }
+    if (isRecord(item) && isRecord(item.acceptWithExecpolicyAmendment)) {
+      return {
+        label: "Yes, and don't ask again for similar commands",
+        aliases: [String(index), "p", "policy", "persist"],
+        result: { decision: item as Record<string, unknown> },
+        hint: "p"
+      };
+    }
+    if (isRecord(item) && isRecord(item.applyNetworkPolicyAmendment)) {
+      return {
+        label: "Yes, and apply this network policy",
+        aliases: [String(index), "p", "policy", "network policy"],
+        result: { decision: item as Record<string, unknown> },
+        hint: "p"
+      };
     }
     return undefined;
   }
@@ -1248,6 +1808,157 @@ export class App {
     return lines.join("\n");
   }
 
+  private parseLogQuery(args: string[]): LogQuery | Error {
+    const query: LogQuery = { limit: 200 };
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index];
+      if (arg === "-n") {
+        const limit = Number(args[index + 1] || "");
+        if (!Number.isInteger(limit) || limit < 1 || limit > 2000) {
+          return new Error("`-n` must be an integer between 1 and 2000");
+        }
+        query.limit = limit;
+        index += 1;
+        continue;
+      }
+      if (arg === "--since") {
+        const { value, nextIndex } = this.consumeOptionText(args, index + 1);
+        const since = value.trim();
+        if (!since) {
+          return new Error("`--since` requires a value such as `10m ago`, `today`, or `2026-03-27 01:00:00`");
+        }
+        query.since = this.normalizeJournalctlSince(since);
+        index = nextIndex;
+        continue;
+      }
+      if (arg === "--grep") {
+        const { value, nextIndex } = this.consumeOptionText(args, index + 1);
+        const grep = value.trim();
+        if (!grep) {
+          return new Error("`--grep` requires a non-empty value");
+        }
+        query.grep = grep;
+        index = nextIndex;
+        continue;
+      }
+      return new Error(`unsupported option \`${arg}\``);
+    }
+    return query;
+  }
+
+  private logHelpText(): string {
+    return [
+      "# Log",
+      "",
+      "Read recent bridge service logs from the systemd journal.",
+      "",
+      "## Usage",
+      "",
+      "- `/log`",
+      "- `/log -n 50`",
+      "- `/log --since 30m`",
+      "- `/log --since today --grep reconnect`",
+      "- `/log -h`",
+      "",
+      "## Notes",
+      "",
+      "- Default tail is `200` lines.",
+      "- `-n` accepts values from `1` to `2000`.",
+      "- `--since` accepts multi-word values like `30 minutes ago`, plus compact forms like `30m`, `2h`, and `1d`.",
+      "- `--grep` filters the fetched journal output case-insensitively."
+    ].join("\n");
+  }
+
+  private consumeOptionText(args: string[], startIndex: number): { value: string; nextIndex: number } {
+    const parts: string[] = [];
+    let index = startIndex;
+    for (; index < args.length; index += 1) {
+      if (args[index].startsWith("-")) break;
+      parts.push(args[index]);
+    }
+    return { value: parts.join(" "), nextIndex: index - 1 };
+  }
+
+  private normalizeJournalctlSince(value: string): string {
+    const trimmed = value.trim();
+    const compact = trimmed.match(/^(\d+)([mhd])$/i);
+    if (!compact) return trimmed;
+    const amount = Number(compact[1]);
+    const unit = compact[2].toLowerCase();
+    const date = new Date();
+    if (unit === "m") {
+      date.setMinutes(date.getMinutes() - amount);
+    } else if (unit === "h") {
+      date.setHours(date.getHours() - amount);
+    } else {
+      date.setDate(date.getDate() - amount);
+    }
+    return this.formatJournalctlTimestamp(date);
+  }
+
+  private formatJournalctlTimestamp(date: Date): string {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    const hour = String(date.getHours()).padStart(2, "0");
+    const minute = String(date.getMinutes()).padStart(2, "0");
+    const second = String(date.getSeconds()).padStart(2, "0");
+    return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+  }
+
+  private async readBridgeLogs(query: LogQuery): Promise<string> {
+    try {
+      const journalArgs = [
+        "--user",
+        "-u",
+        "codex-feishu-bridge.service",
+        "-n",
+        String(query.limit),
+        "--no-pager"
+      ];
+      if (query.since) {
+        journalArgs.push("--since", query.since);
+      }
+      const { stdout, stderr } = await execFileAsync("journalctl", journalArgs, {
+        timeout: GIT_COMMAND_TIMEOUT_MS,
+        maxBuffer: 8 * 1024 * 1024
+      });
+      const combined = [stdout, stderr].filter(Boolean).join(stderr && stdout ? "\n" : "");
+      const filtered = query.grep
+        ? combined
+            .split(/\r?\n/)
+            .filter((line) => line.toLowerCase().includes(query.grep!.toLowerCase()))
+            .join("\n")
+        : combined;
+      return [
+        "# Log",
+        "",
+        `- **unit**: \`codex-feishu-bridge.service\``,
+        `- **lines**: \`${query.limit}\``,
+        ...(query.since ? [`- **since**: \`${query.since}\``] : []),
+        ...(query.grep ? [`- **grep**: \`${query.grep}\``] : []),
+        "",
+        "```text",
+        truncateOutput(filtered || "(no output)"),
+        "```"
+      ].join("\n");
+    } catch (error) {
+      const maybe = error as Error & { stdout?: string; stderr?: string; code?: number | string };
+      const output = [maybe.stdout, maybe.stderr].filter(Boolean).join(maybe.stdout && maybe.stderr ? "\n" : "");
+      return [
+        "# Log",
+        "",
+        `- **unit**: \`codex-feishu-bridge.service\``,
+        `- **status**: \`failed\``,
+        `- **code**: \`${String(maybe.code ?? "(unknown)")}\``,
+        "",
+        "```text",
+        truncateOutput(output || maybe.message || "journalctl failed"),
+        "```"
+      ].join("\n");
+    }
+  }
+
   private async runGitCommand(project: string, args: string[]): Promise<string> {
     const gitArgs = [...args];
     const commandText = ["git", ...gitArgs].join(" ");
@@ -1348,6 +2059,37 @@ interface ProjectListEntry {
   updatedAt?: string;
 }
 
+interface PendingApproval {
+  title: string;
+  label: string;
+  prompt: string;
+  parse: (text: string) => ParsedApprovalReply;
+  timeoutResult: Record<string, unknown>;
+  cancelResult: Record<string, unknown>;
+  resolve?: (value: Record<string, unknown>) => void;
+  timer?: NodeJS.Timeout;
+}
+
+interface ParsedApprovalReply {
+  ok: boolean;
+  result?: Record<string, unknown>;
+  summary?: string;
+  error?: string;
+}
+
+interface ChoiceReply {
+  label: string;
+  aliases: string[];
+  result: Record<string, unknown>;
+  hint?: string;
+}
+
+interface LogQuery {
+  limit: number;
+  since?: string;
+  grep?: string;
+}
+
 function escapeMarkdownCell(value: string): string {
   return value.replace(/\|/g, "\\|").replace(/\n/g, " ").trim();
 }
@@ -1355,4 +2097,133 @@ function escapeMarkdownCell(value: string): string {
 function truncateOutput(value: string): string {
   if (value.length <= GIT_OUTPUT_SOFT_LIMIT) return value;
   return `${value.slice(0, GIT_OUTPUT_SOFT_LIMIT)}\n\n[output truncated]`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function asObjectRecord(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}
+
+function readStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  return items.length > 0 ? items : undefined;
+}
+
+function normalizeApprovalReply(text: string): string {
+  return text.trim().toLowerCase();
+}
+
+function matchesAny(text: string, terms: string[]): boolean {
+  return terms.some((term) => text === term || text.includes(term));
+}
+
+function parseNumberSelections(text: string): number[] {
+  const matches = Array.from(text.matchAll(/\b\d+\b/g), (match) => Number(match[0]));
+  return matches.filter((value) => Number.isInteger(value) && value > 0);
+}
+
+function parseChoiceReply(text: string, choices: ChoiceReply[]): ParsedApprovalReply {
+  const normalized = normalizeApprovalReply(text);
+  const numbers = parseNumberSelections(normalized);
+  if (numbers.length > 0) {
+    const selected = choices[numbers[0] - 1];
+    if (!selected) {
+      return { ok: false, error: `unknown choice index \`${numbers[0]}\`` };
+    }
+    return { ok: true, result: selected.result, summary: `\`${selected.label}\`` };
+  }
+
+  for (const choice of choices) {
+    if (choice.aliases.some((alias) => normalized === alias || normalized.includes(alias))) {
+      return { ok: true, result: choice.result, summary: `\`${choice.label}\`` };
+    }
+  }
+
+  return { ok: false, error: "reply did not match any available choice" };
+}
+
+function parseToolInputReply(
+  text: string,
+  questions: Array<Record<string, unknown>>
+): ParsedApprovalReply {
+  if (questions.length === 0) {
+    return { ok: true, result: { answers: {} }, summary: "`(empty)`" };
+  }
+
+  if (questions.length === 1) {
+    const question = questions[0];
+    const id = typeof question.id === "string" ? question.id : "q1";
+    const answer = parseSingleQuestionAnswer(text, question);
+    if (!answer.ok) return answer;
+    return {
+      ok: true,
+      result: { answers: { [id]: { answers: answer.values } } },
+      summary: `answered \`${id}\``
+    };
+  }
+
+  const answers: Record<string, { answers: string[] }> = {};
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (const line of lines) {
+    const match = line.match(/^([^=:#]+)\s*[:=]\s*(.+)$/);
+    if (!match) continue;
+    const key = match[1].trim();
+    const rawValue = match[2].trim();
+    const question =
+      questions.find((item) => String(item.id || "") === key) ||
+      questions[Number(key) - 1];
+    if (!question) continue;
+    const parsed = parseSingleQuestionAnswer(rawValue, question);
+    if (!parsed.ok) return parsed;
+    answers[String(question.id || key)] = { answers: parsed.values };
+  }
+  if (Object.keys(answers).length === 0) {
+    return { ok: false, error: "reply using `question_id=value` lines for multi-question input" };
+  }
+  return { ok: true, result: { answers }, summary: `answered ${Object.keys(answers).length} question(s)` };
+}
+
+function parseSingleQuestionAnswer(
+  text: string,
+  question: Record<string, unknown>
+): { ok: boolean; values: string[]; error?: string } {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return { ok: false, values: [], error: "empty answer" };
+  }
+
+  const options = Array.isArray(question.options)
+    ? question.options.filter((item): item is Record<string, unknown> => isRecord(item))
+    : [];
+  if (options.length === 0) {
+    return { ok: true, values: [trimmed] };
+  }
+
+  const numbers = parseNumberSelections(trimmed);
+  const selectedByIndex = numbers
+    .map((value) => options[value - 1])
+    .filter((item): item is Record<string, unknown> => Boolean(item))
+    .map((item) => String(item.label || "").trim())
+    .filter(Boolean);
+  if (selectedByIndex.length > 0) {
+    return { ok: true, values: selectedByIndex };
+  }
+
+  const normalized = normalizeApprovalReply(trimmed);
+  const selectedByLabel = options
+    .map((item) => String(item.label || "").trim())
+    .filter(Boolean)
+    .filter((label) => normalized.includes(label.toLowerCase()));
+  if (selectedByLabel.length > 0) {
+    return { ok: true, values: selectedByLabel };
+  }
+
+  return { ok: true, values: [trimmed] };
 }

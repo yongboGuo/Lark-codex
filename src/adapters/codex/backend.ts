@@ -15,12 +15,20 @@ export interface CodexRunHandle {
 export interface CodexRunHooks {
   onStatus?: (text: string) => Promise<void> | void;
   onUpdate?: (text: string) => Promise<void> | void;
+  onServerRequest?: (
+    request: CodexServerRequest
+  ) => Promise<Record<string, unknown> | undefined> | Record<string, unknown> | undefined;
 }
 
 export interface CodexTurnOptions {
   searchEnabled?: boolean;
   model?: string;
   profile?: string;
+}
+
+export interface CodexServerRequest {
+  method: string;
+  params: Record<string, unknown>;
 }
 
 export interface CodexBackend {

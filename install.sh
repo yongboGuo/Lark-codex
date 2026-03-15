@@ -21,6 +21,9 @@ echo "unit: ${UNIT_PATH}"
 echo "config: ${ENV_PATH}"
 echo "config: ${JSON_PATH}"
 echo "note: config.json is the primary bridge config; bridge.env is only for secrets and process env."
+if [[ -f "${JSON_PATH}" ]]; then
+  echo "note: existing config.json will be preserved; checked-in defaults like backendMode/app-server are only applied on first install."
+fi
 read -r -p "Continue? [y/N] " CONFIRM
 if [[ ! "${CONFIRM}" =~ ^[Yy]$ ]]; then
   echo "aborted"
@@ -124,3 +127,20 @@ systemctl --user start "${UNIT_NAME}"
 echo "verifying service..."
 systemctl --user is-active "${UNIT_NAME}" >/dev/null
 systemctl --user show "${UNIT_NAME}" -p MainPID -p ExecMainPID -p ActiveEnterTimestamp -p SubState
+if [[ -f "${JSON_PATH}" ]]; then
+  python3 - "${JSON_PATH}" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+json_path = Path(sys.argv[1])
+data = json.loads(json_path.read_text())
+codex = data.get("codex", {}) if isinstance(data, dict) else {}
+backend = codex.get("backendMode", "(missing)")
+sandbox = codex.get("sandboxMode", "(missing)")
+approval_timeout = codex.get("approvalTimeoutMs", "(missing)")
+print(f"config backendMode={backend}")
+print(f"config sandboxMode={sandbox}")
+print(f"config approvalTimeoutMs={approval_timeout}")
+PY
+fi

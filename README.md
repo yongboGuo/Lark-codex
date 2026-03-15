@@ -51,12 +51,13 @@ Working v1 bridge:
 - Feishu long-connection receive/send
 - DM receive plus interactive-card replies
 - conversation to native Codex session binding
-- `/help` `/status` `/new` `/resume` `/session` `/stop` `/project` `/approvals`
+- `/help` `/status` `/new` `/resume` `/session` `/stop` `/project` `/approvals` `/log`
 - `/search` `/model` `/profile`
 - `/git` `/pwd` `/ls` `/cat` `/tree` `/find` `/rg`
 - `/project bind <path>` to rebind a conversation to another directory under the allowed project roots
-- `/approvals auto|full-access` to switch the Codex sandbox mode used for future runs
-- backend modes: `spawn` now, `app-server` and `terminal` reserved as experimental
+- `/approvals` to switch the Codex approval mode used for future runs
+- `/log [-n N] [--since <expr>] [--grep <text>]` to tail recent bridge service logs from systemd journal
+- backend modes: `app-server`, `spawn`, and experimental `terminal`
 
 ## Run
 
@@ -106,9 +107,8 @@ npm run install:local
   must stay under one of those allowed roots.
 - `project.defaultSearchEnabled=true` makes new conversations and `/new`
   sessions default to live web search enabled.
-- The checked-in JSON template defaults `codex.sandboxMode` to
-  `danger-full-access`. Change `config.json` if you want `workspace-write`
-  instead.
+- The checked-in JSON template defaults to `codex.backendMode = "app-server"`
+  and `codex.sandboxMode = "default"` so approvals can be mediated in Feishu.
 - The script asks for confirmation, then installs or updates the unit, reloads user systemd,
   enables the service, and performs a hard restart.
 
@@ -116,21 +116,22 @@ For local testing without Feishu, run `npm run cli -- --chat-id test-terminal`. 
 
 ## Backend Mode
 
-- `codex.backendMode = "spawn"` is the supported mode. Each turn spawns
-  `codex exec` or `codex exec resume`, while the bridge persists the native
-  session id.
+- `codex.backendMode = "spawn"` starts one `codex exec` or `codex exec resume`
+  process per turn while the bridge persists the native session id.
 - `spawn` now emits lightweight progress updates such as session start, thinking, long-run heartbeat, and upstream websocket retry notices when Codex exposes them.
-- `codex.backendMode = "app-server"` is experimental. It keeps a local
+- `codex.backendMode = "app-server"` keeps a local
   `codex app-server` subprocess per bound native session and talks to it over
-  stdio JSON-RPC for `thread/start`, `thread/resume`, `turn/start`, and
-  `turn/interrupt`.
+  stdio JSON-RPC for `thread/start`, `thread/resume`, `turn/start`,
+  `turn/interrupt`, approval callbacks, and user-input requests.
 - `codex.backendMode = "terminal"` is experimental. It is intended for a
   terminal-derived Codex experience projected into Feishu, but the current
   Codex interactive CLI is still a full-screen TUI and not yet reliable enough
   to use as the default backend.
-- `codex.sandboxMode = "workspace-write"` maps to Codex `--full-auto`.
-- `codex.sandboxMode = "danger-full-access"` maps to Codex `--dangerously-bypass-approvals-and-sandbox`.
-- The checked-in user-service JSON template defaults to `danger-full-access`.
+- In `spawn`, `codex.sandboxMode = "workspace-write"` maps to Codex `--full-auto`.
+- In `spawn`, `codex.sandboxMode = "danger-full-access"` maps to Codex `--dangerously-bypass-approvals-and-sandbox`.
+- In `app-server`, `codex.sandboxMode = "default"` maps to `sandbox=workspace-write` plus `approvalPolicy=on-request`.
+- In `app-server`, `codex.sandboxMode = "danger-full-access"` maps to `sandbox=danger-full-access` plus `approvalPolicy=never`.
+- `codex.approvalTimeoutMs` controls how long the bridge waits for a Feishu approval or user-input reply before sending a timeout-safe response back to Codex.
 - `codex.runTimeoutMs` controls the maximum lifetime of one active Codex run
   before the bridge terminates it.
 - `codex.spawn.statusIntervalMs` controls the heartbeat interval for long-running
@@ -139,6 +140,8 @@ For local testing without Feishu, run `npm run cli -- --chat-id test-terminal`. 
   `feishu.sendRetry.multiplier`, and `feishu.sendRetry.maxDelayMs` control
   retry/backoff for transient Feishu send failures such as `502`, `429`, and
   short network errors. `maxAttempts = 0` means one send attempt with no retry.
+- `feishu.wsLoggerLevel` controls how much of the Feishu SDK websocket lifecycle is mirrored into the service logs.
+- `feishu.reconnectReadyDebounceMs` controls how often the bridge may send a Feishu `Reconnected` ready card after websocket recovery.
 - Outbound Feishu replies currently use interactive cards with a schema `2.0` markdown body, card title, chat-list summary, and per-reply header template color.
 - `codex.terminal.flushIdleMs` controls the quiet window before terminal output
   is projected back to Feishu as one reply.
