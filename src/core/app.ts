@@ -63,11 +63,15 @@ export class App {
           let lastUpdateText: string | undefined;
           const sendUpdateSafely = async (update: string): Promise<void> => {
             try {
+              const latestBinding =
+                (await this.store.get(conversationKeyFor(message))) || currentBinding;
               await this.feishu?.send({
                 chatId: message.chatId,
                 title: messageTitle,
                 template: messageTemplate,
-                footer: messageFooter,
+                footer: command?.name
+                  ? this.footerForMessage(command?.name, latestBinding)
+                  : this.footerForCodexReply(latestBinding),
                 text: formatForFeishu(update),
                 replyToMessageId: message.messageId,
                 threadId: message.threadId
@@ -88,7 +92,11 @@ export class App {
           const text = await this.handleIncoming(message, sendUpdateSafely);
           const formattedText = formatForFeishu(text);
           if ((formattedText && formattedText !== lastUpdateText) || !streamed) {
-            const finalFooter = command?.name ? messageFooter : this.footerForCodexReply(currentBinding);
+            const latestBinding =
+              (await this.store.get(conversationKeyFor(message))) || currentBinding;
+            const finalFooter = command?.name
+              ? this.footerForMessage(command?.name, latestBinding)
+              : this.footerForCodexReply(latestBinding);
             await this.feishu?.send({
               chatId: message.chatId,
               title: messageTitle,
