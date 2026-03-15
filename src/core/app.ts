@@ -152,8 +152,8 @@ export class App {
         "- `/help` show commands",
         "- `/status` show current session and run state",
         "- `/new` create and bind a fresh Codex session",
-        "- `/session [list [-n N|--all] [--all-projects] [--project]|-h|--help]` show the current bound session, list recent sessions, or show session help",
-        "- `/resume [--last|<session-id>|-n N|-h|--all] [--all-projects] [-C|--cd <dir>]` bind the latest session by default, optionally switching project",
+        "- `/session [list [-n N|--all] [--all-projects] [--project <path>]|-h|--help]` show the current bound session, list recent sessions, or show session help",
+        "- `/resume [--last|<session-id>|-n N|-h|--all] [--all-projects] [--project <path>] [-C|--cd <dir>]` bind the latest session by default, optionally switching project",
         "- `/stop` stop the current active run",
         "- `/project [list [--all|--trusted]|bind [-n N|-m|--mkdir <path>|<path>]|-h]` show, list, or bind projects",
         "- `/git [args...]` run `git` in the current bound project; use `/git -h` for bridge usage",
@@ -233,7 +233,18 @@ export class App {
       }
 
       const allProjects = this.consumeFlag(resumeArgs, "--all-projects");
-      const sortByProject = this.consumeFlag(resumeArgs, "--project");
+      const projectScopeArg = this.consumeOptionValue(resumeArgs, "--project");
+      if (projectScopeArg === "") {
+        return "Usage: `/resume ... [--project <path>]`";
+      }
+      if (projectScopeArg) {
+        const scopedProject = await this.resolveProject(projectScopeArg, resumeProject);
+        if (projectExplicitlySelected && scopedProject !== resumeProject) {
+          return "Cannot use different project paths for `--project <path>` and `-C|--cd <dir>`.";
+        }
+        resumeProject = scopedProject;
+        projectExplicitlySelected = true;
+      }
       if (resumeArgs[0] === "-h" || resumeArgs[0] === "--help") {
         return this.resumeHelpText();
       }
@@ -247,13 +258,16 @@ export class App {
           allProjects
         );
         if (sessions.length === 0) {
-          return this.noSessionsText(resumeProject, allProjects);
+          return this.noSessionsText(resumeProject, allProjects, projectExplicitlySelected);
         }
         return this.renderSessionList(
-          allProjects ? "Resume All Projects" : "Resume Current Project",
-          this.sortSessionsForDisplay(sessions, sortByProject),
-          existing?.codexSessionId,
-          sortByProject
+          projectExplicitlySelected
+            ? "Resume Project Sessions"
+            : allProjects
+              ? "Resume All Projects"
+              : "Resume Current Project",
+          sessions,
+          existing?.codexSessionId
         );
       }
       if ((resumeArgs[0] || "").startsWith("-") && resumeArgs[0] !== "-n") {
@@ -261,7 +275,7 @@ export class App {
           "# Resume",
           "",
           `- **error**: unsupported bridge option \`${resumeArgs[0]}\``,
-          "- **supported**: `/resume`, `/resume --last`, `/resume -n N`, `/resume <session-id>`, `/resume --all`, `/resume --all-projects`, `/resume --project`, `/resume -h`, `/resume ... -C <dir>`",
+          "- **supported**: `/resume`, `/resume --last`, `/resume -n N`, `/resume <session-id>`, `/resume --all`, `/resume --all-projects`, `/resume --project <path>`, `/resume -h`, `/resume ... -C <dir>`",
           "- Use a normal follow-up message after `/resume ...` if you want to continue the bound session."
         ].join("\n");
       }
@@ -282,17 +296,14 @@ export class App {
         if (!Number.isInteger(index) || index < 1) {
           return "Usage: `/resume -n <index>` where `<index>` is an integer >= 1.";
         }
-        const sessions = this.sortSessionsForDisplay(
-          await this.listScopedSessions(
-            Math.min(index, this.config.codex.sessionAllDefaultCount),
-            resumeProject,
-            allProjects
-          ),
-          sortByProject
+        const sessions = await this.listScopedSessions(
+          Math.min(index, this.config.codex.sessionAllDefaultCount),
+          resumeProject,
+          allProjects
         );
         const selected = sessions[index - 1];
         if (!selected) {
-          return `session index out of range: ${index}. Use \`/session list${allProjects ? " --all-projects" : ""} --all\` first.`;
+          return `session index out of range: ${index}. Use \`/session list${allProjects ? " --all-projects" : ""}${projectExplicitlySelected ? ` --project ${resumeProject}` : ""} --all\` first.`;
         }
         targetSessionId = selected.sessionId;
         resumeSource = "indexed";
@@ -302,7 +313,7 @@ export class App {
       }
 
       if (!targetSessionId) {
-        return `No native Codex session found${allProjects ? "" : " for the current project"}. Use \`/session list${allProjects ? " --all-projects" : ""}\` or \`/resume <session-id>\`.`;
+        return this.noSessionsText(resumeProject, allProjects, projectExplicitlySelected);
       }
       await sendEarlyUpdate(`resolving session ${targetSessionId} for project \`${resumeProject}\`...`);
       const sessionExists = await this.codex.getSession(targetSessionId);
@@ -334,7 +345,11 @@ export class App {
     if (command?.name === "session") {
       const sessionArgs = [...command.args];
       const allProjects = this.consumeFlag(sessionArgs, "--all-projects");
-      const sortByProject = this.consumeFlag(sessionArgs, "--project");
+      const currentProject = existing?.project || this.config.project.defaultProject;
+      const projectScopeArg = this.consumeOptionValue(sessionArgs, "--project");
+      if (projectScopeArg === "") {
+        return "Usage: `/session [list ...] [--project <path>]`";
+      }
       if (sessionArgs[0] === "-h" || sessionArgs[0] === "--help") {
         return this.sessionsHelpText();
       }
@@ -343,16 +358,21 @@ export class App {
       if (isList) {
         const listArgs = sessionArgs[0] === "list" ? sessionArgs.slice(1) : sessionArgs;
         const limit = this.parseSessionsListLimit(listArgs);
-        const currentProject = existing?.project || this.config.project.defaultProject;
-        const sessions = await this.listScopedSessions(limit, currentProject, allProjects);
+        const scopedProject = projectScopeArg
+          ? await this.resolveProject(projectScopeArg, currentProject)
+          : currentProject;
+        const sessions = await this.listScopedSessions(limit, scopedProject, allProjects);
         if (sessions.length === 0) {
-          return this.noSessionsText(currentProject, allProjects);
+          return this.noSessionsText(scopedProject, allProjects, Boolean(projectScopeArg));
         }
         return this.renderSessionList(
-          allProjects ? "All Project Sessions" : "Current Project Sessions",
-          this.sortSessionsForDisplay(sessions, sortByProject),
-          existing?.codexSessionId,
-          sortByProject
+          projectScopeArg
+            ? "Project Sessions"
+            : allProjects
+              ? "All Project Sessions"
+              : "Current Project Sessions",
+          sessions,
+          existing?.codexSessionId
         );
       }
 
@@ -1094,7 +1114,8 @@ export class App {
       "- `/resume -n 3`",
       "- `/resume <session-id>`",
       "- `/resume --all-projects`",
-      "- `/resume --all --all-projects --project`",
+      "- `/resume --project /path/to/project`",
+      "- `/resume --all --project /path/to/project`",
       "- `/resume --last -C subdir`",
       "- `/resume -h`",
       "- `/resume --all`",
@@ -1106,7 +1127,7 @@ export class App {
       "- `/resume <session-id>` binds a specific native session id.",
       "- `-C, --cd <dir>` switches the bound project while resuming the session.",
       "- `--all-projects` expands browsing beyond the current project.",
-      "- `--project` sorts list output by project name, then time.",
+      "- `--project <path>` scopes browsing and latest-session lookup to that specific project path.",
       "- `/resume --all` shows the recent sessions list for the current project in Feishu instead of opening an interactive picker.",
       `- In Feishu, use \`/session list --all\` for the default current-project list of \`${this.config.codex.sessionAllDefaultCount}\` sessions, or \`/session list --all --all-projects\` to browse across projects.`,
       "- Index-based resume is order-dependent and should be treated as a convenience, not a stable identifier.",
@@ -1127,7 +1148,8 @@ export class App {
       "- `/session list -n 12`",
       "- `/session list --all`",
       "- `/session list --all-projects`",
-      "- `/session list --all --all-projects --project`",
+      "- `/session list --project /path/to/project`",
+      "- `/session list --all --project /path/to/project`",
       "- `/session -h`",
       "",
       "## Notes",
@@ -1135,7 +1157,7 @@ export class App {
       "- `/session` shows the current bound session for this conversation.",
       "- `/session list` shows recent native Codex sessions for the current project.",
       "- `--all-projects` expands the list across `CODEX_SESSIONS_DIR`.",
-      "- `--project` sorts list output by project name, then time.",
+      "- `--project <path>` filters the list to that specific project path.",
       `- \`/session list\` defaults to \`${this.config.codex.sessionListDefaultCount}\` sessions for the current project.`,
       `- \`/session list --all\` uses the default count \`${this.config.codex.sessionAllDefaultCount}\` for the current project.`,
       `- \`-n\` accepts values from \`1\` to \`${this.config.codex.sessionAllDefaultCount}\`.`,
@@ -1168,7 +1190,21 @@ export class App {
     return true;
   }
 
-  private noSessionsText(project: string, allProjects: boolean): string {
+  private consumeOptionValue(args: string[], flag: string): string | undefined {
+    const index = args.indexOf(flag);
+    if (index < 0) return undefined;
+    const value = args[index + 1];
+    args.splice(index, value ? 2 : 1);
+    if (!value || value.startsWith("-")) {
+      return "";
+    }
+    return value;
+  }
+
+  private noSessionsText(project: string, allProjects: boolean, explicitProject = false): string {
+    if (explicitProject) {
+      return `No native Codex sessions found for project \`${project}\` under ${this.config.codex.sessionsDir}`;
+    }
     return allProjects
       ? `No native Codex sessions found under ${this.config.codex.sessionsDir}`
       : `No native Codex sessions found for current project \`${project}\` under ${this.config.codex.sessionsDir}`;
@@ -1177,15 +1213,9 @@ export class App {
   private renderSessionList(
     title: string,
     sessions: Awaited<ReturnType<typeof listRecentSessions>>,
-    boundSessionId?: string,
-    sortedByProject = false
+    boundSessionId?: string
   ): string {
-    const lines = [
-      `# ${title}`,
-      "",
-      sortedByProject ? "- sorted by: `project`, `time desc`" : "- sorted by: `time desc`",
-      ""
-    ];
+    const lines = [`# ${title}`, "", "- sorted by: `time desc`", ""];
     for (const [index, session] of sessions.entries()) {
       const flags = [session.sessionId === boundSessionId ? "bound" : ""].filter(Boolean);
       lines.push(
@@ -1196,20 +1226,6 @@ export class App {
       lines.push(`   - about: ${escapeMarkdownCell(session.preview || "(no preview)")}`);
     }
     return lines.join("\n");
-  }
-
-  private sortSessionsForDisplay(
-    sessions: Awaited<ReturnType<typeof listRecentSessions>>,
-    byProject: boolean
-  ): Awaited<ReturnType<typeof listRecentSessions>> {
-    if (!byProject) {
-      return sessions;
-    }
-    return [...sessions].sort((a, b) => {
-      const projectCompare = (a.cwd || "").localeCompare(b.cwd || "");
-      if (projectCompare !== 0) return projectCompare;
-      return (b.createdAt || "").localeCompare(a.createdAt || "");
-    });
   }
 
   private renderProjectList(
