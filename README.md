@@ -49,10 +49,12 @@ Thin Feishu-native relay for Codex native sessions.
 Working v1 bridge:
 
 - Feishu long-connection receive/send
-- DM text in / text out
+- DM receive plus interactive-card replies
 - conversation to native Codex session binding
-- `/help` `/status` `/new` `/resume <session-id>` `/session list` `/stop` `/project` `/approvals`
-- `/project <path>` to rebind a conversation to another directory under `PROJECT_ALLOWED_ROOTS`
+- `/help` `/status` `/new` `/resume` `/session` `/stop` `/project` `/approvals`
+- `/search` `/model` `/profile`
+- `/git` `/pwd` `/ls` `/cat` `/tree` `/find` `/rg`
+- `/project bind <path>` to rebind a conversation to another directory under `PROJECT_ALLOWED_ROOTS`
 - `/approvals auto|full-access` to switch the Codex sandbox mode used for future runs
 - backend modes: `spawn` now, `app-server` and `terminal` reserved as experimental
 
@@ -89,6 +91,8 @@ npm run install:local
 
 - `install.sh` renders the current checkout path into the unit, writes the unit to:
   `~/.config/systemd/user/codex-feishu-bridge.service`
+- `install.sh` builds a detached package payload, installs the global `codex-feishu-bridge`
+  binary under your npm prefix, and points the user service at that binary.
 - It preserves existing `~/.config/codex-feishu-bridge/bridge.env` and `config.json` if they
   already exist.
 - Machine-specific proxy or custom CA settings should live in
@@ -116,9 +120,17 @@ For local testing without Feishu, run `npm run cli -- --chat-id test-terminal`. 
 - `CODEX_RUN_TIMEOUT_MS` controls the maximum lifetime of one active Codex run before the bridge terminates it.
 - `SPAWN_STATUS_INTERVAL_MS` controls the heartbeat interval for long-running `spawn` turns. Set it to `0` to disable heartbeats.
 - `FEISHU_SEND_RETRY_MAX_ATTEMPTS`, `FEISHU_SEND_RETRY_BASE_DELAY_MS`, `FEISHU_SEND_RETRY_MULTIPLIER`, and `FEISHU_SEND_RETRY_MAX_DELAY_MS` control retry/backoff for transient Feishu send failures such as `502`, `429`, and short network errors. `FEISHU_SEND_RETRY_MAX_ATTEMPTS=0` means one send attempt with no retry.
+- Outbound Feishu replies currently use interactive cards with a schema `2.0` markdown body, card title, chat-list summary, and per-reply header template color.
 - `TERMINAL_FLUSH_IDLE_MS` controls the quiet window before terminal output is projected back to Feishu as one reply.
 - `TERMINAL_FLUSH_MAX_CHARS` caps one terminal-mode Feishu reply so noisy screens do not flood the chat.
 - Numeric config values must be integers. Invalid values now fail fast during startup.
+
+## Feishu Rendering
+
+- Inbound Feishu messages support both plain `text` and rich `post` payloads.
+- Outbound replies use Feishu interactive cards.
+- The card body keeps the same markdown content string the bridge generates, plus a raw fenced markdown appendix for clients that do not render every markdown feature consistently.
+- Long replies are split on markdown block boundaries so fenced code blocks stay valid across chunks.
 
 ## Codex Profile Mode
 

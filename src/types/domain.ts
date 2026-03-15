@@ -34,6 +34,8 @@ export interface OutgoingMessage {
   chatId: string;
   title?: string;
   text?: string;
+  template?: "blue" | "wathet" | "turquoise" | "green" | "yellow" | "orange" | "red" | "carmine" | "violet" | "purple" | "indigo" | "grey" | "default";
+  footer?: string;
   replyToMessageId?: string;
   threadId?: string;
 }

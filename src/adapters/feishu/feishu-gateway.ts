@@ -76,16 +76,24 @@ export class FeishuGateway {
 
   async send(message: OutgoingMessage): Promise<void> {
     const text = message.text || "";
-    for (const chunk of splitMessageText(text, FEISHU_POST_SOFT_LIMIT)) {
-      await this.sendChunkWithRetry(message.chatId, chunk, message.title);
+    const chunks = splitMessageText(text, FEISHU_POST_SOFT_LIMIT);
+    for (const [index, chunk] of chunks.entries()) {
+      await this.sendChunkWithRetry(
+        message.chatId,
+        chunk,
+        message.title,
+        message.template,
+        formatChunkFooter(message.footer, index, chunks.length)
+      );
     }
   }
 
-  async sendStartupReady(text: string): Promise<void> {
+  async sendStartupReady(text: string, footer?: string): Promise<void> {
     if (!this.config.startupNotifyChatId) return;
     await this.send({
       chatId: this.config.startupNotifyChatId,
-      text
+      text,
+      footer
     });
   }
 
@@ -107,7 +115,13 @@ export class FeishuGateway {
     }
   }
 
-  private async sendChunkWithRetry(chatId: string, chunk: string, title?: string): Promise<void> {
+  private async sendChunkWithRetry(
+    chatId: string,
+    chunk: string,
+    title?: string,
+    template?: OutgoingMessage["template"],
+    footer?: string
+  ): Promise<void> {
     let lastError: unknown;
     const configuredAttempts = this.config.sendRetryMaxAttempts;
     const attempts = Math.max(1, configuredAttempts);
@@ -120,8 +134,8 @@ export class FeishuGateway {
           },
           data: {
             receive_id: chatId,
-            msg_type: "post",
-            content: buildMarkdownPostContent(chunk, title)
+            msg_type: "interactive",
+            content: buildInteractiveCardContent(chunk, title, template, footer)
           }
         });
         console.log("Feishu outbound message sent", {
@@ -300,16 +314,83 @@ function splitMessageText(text: string, maxChars: number): string[] {
   return chunks.length > 0 ? chunks : [text];
 }
 
-function buildMarkdownPostContent(text: string, title?: string): string {
+function buildInteractiveCardContent(
+  text: string,
+  title?: string,
+  template: OutgoingMessage["template"] = "blue",
+  footer?: string
+): string {
   const rendered = text.trim();
-  const fenced = wrapRawMarkdown(rendered);
+  const rawMarkdown = wrapRawMarkdown(rendered);
+  const summary = buildCardSummary(title, rendered);
+  const meta = buildCardMetaMarkdown(title);
   return JSON.stringify({
-    zh_cn: {
-      title: title?.trim() || undefined,
-      content: [[{ tag: "md", text: `${rendered}\n\n${fenced}` }]]
+    schema: "2.0",
+    config: {
+      summary: {
+        content: summary
+      },
+      wide_screen_mode: true,
+      width_mode: "fill",
+      enable_forward: true,
+      update_multi: true
+    },
+    header: {
+      template,
+      title: {
+        tag: "plain_text",
+        content: title?.trim() || "Codex"
+      }
+    },
+    body: {
+      direction: "vertical",
+      padding: "12px 8px 12px 8px",
+      vertical_spacing: "8px",
+      elements: [
+        {
+          tag: "markdown",
+          content: rendered
+        },
+        {
+          tag: "markdown",
+          content: rawMarkdown
+        },
+        {
+          tag: "markdown",
+          content: footer || meta
+        }
+      ]
     }
   });
 }
+
+function buildCardSummary(title: string | undefined, rendered: string): string {
+  const firstLine = rendered
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean);
+  const base = firstLine || title?.trim() || "Codex";
+  return previewText(base, 80);
+}
+
+function buildCardMetaMarkdown(title: string | undefined): string {
+  const parts = ["**bridge:** `codex-feishu-bridge`"];
+  if (title?.trim()) {
+    parts.push(`**title:** \`${title.trim()}\``);
+  }
+  parts.push(
+    `**time:** \`${new Date().toLocaleTimeString("en-GB", { hour12: false })}\``
+  );
+  return parts.join("  ");
+}
+
+function formatChunkFooter(footer: string | undefined, index: number, total: number): string | undefined {
+  const chunk = total > 1 ? `chunk ${index + 1}/${total}` : "";
+  if (footer && chunk) return `${footer}  |  ${chunk}`;
+  return footer || chunk || undefined;
+}
+
 
 function wrapRawMarkdown(text: string): string {
   const longestBacktickRun = Math.max(

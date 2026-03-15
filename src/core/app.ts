@@ -10,7 +10,7 @@ import { AppConfig } from "../config/env.js";
 import { conversationKeyFor } from "./conversation-key.js";
 import { parseCommand } from "./command-router.js";
 import { BindingStore } from "../store/binding-store.js";
-import { ActiveRun, IncomingMessage, SessionBinding } from "../types/domain.js";
+import { ActiveRun, IncomingMessage, OutgoingMessage, SessionBinding } from "../types/domain.js";
 import { getSessionSummary, listRecentSessions } from "../adapters/codex/session-files.js";
 import { listTrustedProjects } from "../adapters/codex/project-files.js";
 import { getCodexRuntimeMeta } from "../adapters/codex/runtime-meta.js";
@@ -50,7 +50,10 @@ export class App {
     this.feishu = new FeishuGateway(this.config.feishu);
     await this.feishu.start(async (message) => {
       const command = parseCommand(message);
+      const currentBinding = await this.store.get(conversationKeyFor(message));
       const messageTitle = this.titleForCommand(command?.name);
+      const messageTemplate = this.templateForCommand(command?.name);
+      const messageFooter = this.footerForMessage(command?.name, currentBinding);
       const formatForFeishu = (text: string): string =>
         command?.name ? this.stripLeadingMarkdownHeading(text) : text;
       try {
@@ -61,6 +64,8 @@ export class App {
             await this.feishu?.send({
               chatId: message.chatId,
               title: messageTitle,
+              template: messageTemplate,
+              footer: messageFooter,
               text: formatForFeishu(update),
               replyToMessageId: message.messageId,
               threadId: message.threadId
@@ -81,9 +86,12 @@ export class App {
         const text = await this.handleIncoming(message, sendUpdateSafely);
         const formattedText = formatForFeishu(text);
         if ((formattedText && formattedText !== lastUpdateText) || !streamed) {
+          const finalFooter = command?.name ? messageFooter : this.footerForCodexReply(currentBinding);
           await this.feishu?.send({
             chatId: message.chatId,
             title: messageTitle,
+            template: messageTemplate,
+            footer: finalFooter,
             text: formattedText,
             replyToMessageId: message.messageId,
             threadId: message.threadId
@@ -102,6 +110,8 @@ export class App {
           await this.feishu?.send({
             chatId: message.chatId,
             title: messageTitle || "Bridge Error",
+            template: "red",
+            footer: this.buildIsoFooter(),
             text: `bridge error: ${text}`,
             replyToMessageId: message.messageId,
             threadId: message.threadId
@@ -113,7 +123,10 @@ export class App {
     });
     if (this.config.feishu.startupNotifyChatId) {
       try {
-        await this.feishu.sendStartupReady(this.buildStartupReadyMessage());
+        await this.feishu.sendStartupReady(
+          this.buildStartupReadyMessage(),
+          this.buildIsoFooter()
+        );
         console.log("Feishu startup ready notification sent", {
           chatId: this.config.feishu.startupNotifyChatId
         });
@@ -723,6 +736,36 @@ export class App {
     }
   }
 
+  private templateForCommand(commandName?: string): OutgoingMessage["template"] {
+    if (!commandName) {
+      return "blue";
+    }
+    switch (commandName) {
+      case "help":
+      case "status":
+      case "session":
+      case "project":
+      case "approvals":
+      case "search":
+      case "model":
+      case "profile":
+        return "indigo";
+      case "new":
+      case "resume":
+      case "stop":
+      case "git":
+      case "pwd":
+      case "ls":
+      case "cat":
+      case "tree":
+      case "find":
+      case "rg":
+        return "wathet";
+      default:
+        return "blue";
+    }
+  }
+
   private stripLeadingMarkdownHeading(text: string): string {
     const normalized = text.replace(/\r\n/g, "\n");
     if (!normalized.startsWith("# ")) {
@@ -733,6 +776,42 @@ export class App {
       return "";
     }
     return normalized.slice(firstNewline + 1).replace(/^\n+/, "");
+  }
+
+  private footerForMessage(commandName: string | undefined, binding?: SessionBinding): string | undefined {
+    if (!commandName) return undefined;
+    const project = binding?.project || this.config.project.defaultProject;
+    return `${this.buildIsoFooter()}  |  project: \`${path.basename(project) || project}\``;
+  }
+
+  private footerForCodexReply(binding?: SessionBinding): string {
+    const parts = [this.buildIsoFooter()];
+    if (binding?.codexSessionId) {
+      parts.push(`session: \`${binding.codexSessionId}\``);
+    }
+    const project = binding?.project || this.config.project.defaultProject;
+    parts.push(`project: \`${path.basename(project) || project}\``);
+    return parts.join("  |  ");
+  }
+
+  private buildIsoFooter(): string {
+    return this.formatLocalIsoTimestamp(new Date());
+  }
+
+  private formatLocalIsoTimestamp(date: Date): string {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    const hours = String(date.getHours()).padStart(2, "0");
+    const minutes = String(date.getMinutes()).padStart(2, "0");
+    const seconds = String(date.getSeconds()).padStart(2, "0");
+    const millis = String(date.getMilliseconds()).padStart(3, "0");
+    const offsetMinutes = -date.getTimezoneOffset();
+    const sign = offsetMinutes >= 0 ? "+" : "-";
+    const absoluteOffset = Math.abs(offsetMinutes);
+    const offsetHours = String(Math.floor(absoluteOffset / 60)).padStart(2, "0");
+    const offsetMins = String(absoluteOffset % 60).padStart(2, "0");
+    return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${millis}${sign}${offsetHours}:${offsetMins}`;
   }
 
   private makeBinding(
