@@ -534,7 +534,7 @@ export class App {
       }
       await sendEarlyUpdate(`switching approvals to \`${nextMode}\`...`);
       this.config.codex.sandboxMode = nextMode;
-      await this.persistJsonSetting("CODEX_SANDBOX_MODE", nextMode);
+      await this.persistJsonSetting(["codex", "sandboxMode"], nextMode);
       return [
         "# Approvals",
         "",
@@ -883,12 +883,24 @@ export class App {
     return undefined;
   }
 
-  private async persistJsonSetting(name: string, value: string): Promise<void> {
+  private async persistJsonSetting(jsonPath: string[], value: string): Promise<void> {
     if (!this.config.configPath) return;
     const raw = await fs.readFile(this.config.configPath, "utf8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    parsed[name] = value;
+    this.setNestedJsonValue(parsed, jsonPath, value);
     await fs.writeFile(this.config.configPath, JSON.stringify(parsed, null, 2) + "\n", "utf8");
+  }
+
+  private setNestedJsonValue(target: Record<string, unknown>, jsonPath: string[], value: unknown): void {
+    let current: Record<string, unknown> = target;
+    for (const segment of jsonPath.slice(0, -1)) {
+      const next = current[segment];
+      if (!next || typeof next !== "object" || Array.isArray(next)) {
+        current[segment] = {};
+      }
+      current = current[segment] as Record<string, unknown>;
+    }
+    current[jsonPath[jsonPath.length - 1]] = value;
   }
 
   private async findMostRecentSessionId(

@@ -57,23 +57,82 @@ export interface AppConfig {
   storePath: string;
 }
 
+interface JsonConfigShape {
+  __path?: string;
+  app?: {
+    port?: unknown;
+    logLevel?: unknown;
+  };
+  feishu?: {
+    sendRetry?: {
+      maxAttempts?: unknown;
+      baseDelayMs?: unknown;
+      multiplier?: unknown;
+      maxDelayMs?: unknown;
+    };
+  };
+  codex?: {
+    bin?: unknown;
+    home?: unknown;
+    sessionsDir?: unknown;
+    profileMode?: unknown;
+    backendMode?: unknown;
+    sandboxMode?: unknown;
+    runTimeoutMs?: unknown;
+    spawn?: {
+      statusIntervalMs?: unknown;
+    };
+    terminal?: {
+      renderMode?: unknown;
+      flushIdleMs?: unknown;
+      flushMaxChars?: unknown;
+      startupTimeoutMs?: unknown;
+    };
+  };
+  session?: {
+    listDefaultCount?: unknown;
+    allDefaultCount?: unknown;
+  };
+  project?: {
+    allowedRoots?: unknown;
+    defaultPath?: unknown;
+    defaultSearchEnabled?: unknown;
+  };
+  status?: {
+    includeProject?: unknown;
+  };
+  paths?: {
+    storePath?: unknown;
+  };
+  [key: string]: unknown;
+}
+
 export function loadConfig(): AppConfig {
   const jsonConfig = loadJsonConfig(process.env.BRIDGE_CONFIG_JSON);
   const nodeEnv = optional("NODE_ENV", "development");
-  const defaultProject = path.resolve(readSetting("DEFAULT_PROJECT", process.cwd(), jsonConfig));
-  const projectAllowedRoots = parseRootsSetting(
-    readSetting("PROJECT_ALLOWED_ROOTS", "", jsonConfig),
+  const defaultProject = path.resolve(
+    readTextSetting("DEFAULT_PROJECT", process.cwd(), jsonConfig, ["project", "defaultPath"])
+  );
+  const projectAllowedRoots = readRootsSetting(
+    "PROJECT_ALLOWED_ROOTS",
+    jsonConfig,
+    ["project", "allowedRoots"],
     defaultProject
   );
   if (!isUnderAnyRoot(defaultProject, projectAllowedRoots)) {
     throw new Error(
-      `DEFAULT_PROJECT must stay under PROJECT_ALLOWED_ROOTS: ${defaultProject}`
+      `project.defaultPath must stay under project.allowedRoots: ${defaultProject}`
     );
   }
 
   const homeDir = process.env.HOME || "/tmp";
   const codexProfileMode =
-    readSetting("CODEX_PROFILE_MODE", nodeEnv === "development" ? "isolated" : "personal", jsonConfig) ===
+    readTextSetting(
+      "CODEX_PROFILE_MODE",
+      nodeEnv === "development" ? "isolated" : "personal",
+      jsonConfig,
+      ["codex", "profileMode"]
+    ) ===
     "personal"
       ? "personal"
       : "isolated";
@@ -85,35 +144,59 @@ export function loadConfig(): AppConfig {
           nodeEnv === "development" ? ".codex-feishu-bridge-dev" : ".codex-feishu-bridge"
         );
 
-  const codexBackendMode = readSetting("CODEX_BACKEND_MODE", "spawn", jsonConfig);
+  const codexBackendMode = readTextSetting("CODEX_BACKEND_MODE", "spawn", jsonConfig, [
+    "codex",
+    "backendMode"
+  ]);
   return {
     configPath: jsonConfig?.__path,
     nodeEnv,
-    port: readIntegerSetting("PORT", "3300", jsonConfig, { min: 1 }),
-    logLevel: readSetting("LOG_LEVEL", "info", jsonConfig),
+    port: readIntegerSetting("PORT", 3300, jsonConfig, ["app", "port"], { min: 1 }),
+    logLevel: readTextSetting("LOG_LEVEL", "info", jsonConfig, ["app", "logLevel"]),
     feishu: {
       appId: required("FEISHU_APP_ID"),
       appSecret: required("FEISHU_APP_SECRET"),
       botOpenId: required("FEISHU_BOT_OPEN_ID"),
       startupNotifyChatId: optional("FEISHU_STARTUP_NOTIFY_CHAT_ID", "").trim() || undefined,
       connectionMode: "websocket",
-      sendRetryMaxAttempts: readIntegerSetting("FEISHU_SEND_RETRY_MAX_ATTEMPTS", "5", jsonConfig, {
-        min: 0
-      }),
-      sendRetryBaseDelayMs: readIntegerSetting("FEISHU_SEND_RETRY_BASE_DELAY_MS", "1000", jsonConfig, {
-        min: 0
-      }),
-      sendRetryMultiplier: readNumberSetting("FEISHU_SEND_RETRY_MULTIPLIER", "2", jsonConfig, {
-        min: 1
-      }),
-      sendRetryMaxDelayMs: readIntegerSetting("FEISHU_SEND_RETRY_MAX_DELAY_MS", "10000", jsonConfig, {
-        min: 0
-      })
+      sendRetryMaxAttempts: readIntegerSetting(
+        "FEISHU_SEND_RETRY_MAX_ATTEMPTS",
+        5,
+        jsonConfig,
+        ["feishu", "sendRetry", "maxAttempts"],
+        { min: 0 }
+      ),
+      sendRetryBaseDelayMs: readIntegerSetting(
+        "FEISHU_SEND_RETRY_BASE_DELAY_MS",
+        1000,
+        jsonConfig,
+        ["feishu", "sendRetry", "baseDelayMs"],
+        { min: 0 }
+      ),
+      sendRetryMultiplier: readNumberSetting(
+        "FEISHU_SEND_RETRY_MULTIPLIER",
+        2,
+        jsonConfig,
+        ["feishu", "sendRetry", "multiplier"],
+        { min: 1 }
+      ),
+      sendRetryMaxDelayMs: readIntegerSetting(
+        "FEISHU_SEND_RETRY_MAX_DELAY_MS",
+        10000,
+        jsonConfig,
+        ["feishu", "sendRetry", "maxDelayMs"],
+        { min: 0 }
+      )
     },
     codex: {
-      bin: readSetting("CODEX_BIN", "codex", jsonConfig),
-      home: readSetting("CODEX_HOME", defaultCodexHome, jsonConfig),
-      sessionsDir: readSetting("CODEX_SESSIONS_DIR", path.join(defaultCodexHome, "sessions"), jsonConfig),
+      bin: readTextSetting("CODEX_BIN", "codex", jsonConfig, ["codex", "bin"]),
+      home: readTextSetting("CODEX_HOME", defaultCodexHome, jsonConfig, ["codex", "home"]),
+      sessionsDir: readTextSetting(
+        "CODEX_SESSIONS_DIR",
+        path.join(defaultCodexHome, "sessions"),
+        jsonConfig,
+        ["codex", "sessionsDir"]
+      ),
       profileMode: codexProfileMode,
       backendMode:
         codexBackendMode === "terminal"
@@ -122,68 +205,96 @@ export function loadConfig(): AppConfig {
             ? "app-server"
             : "spawn",
       sandboxMode:
-        readSetting("CODEX_SANDBOX_MODE", "workspace-write", jsonConfig) === "danger-full-access"
+        readTextSetting("CODEX_SANDBOX_MODE", "workspace-write", jsonConfig, ["codex", "sandboxMode"]) ===
+        "danger-full-access"
           ? "danger-full-access"
           : "workspace-write",
       sessionListDefaultCount: readIntegerSetting(
         "CODEX_SESSION_LIST_DEFAULT_COUNT",
-        "20",
+        20,
         jsonConfig,
+        ["session", "listDefaultCount"],
         { min: 1 }
       ),
       sessionAllDefaultCount: readIntegerSetting(
         "CODEX_SESSION_ALL_DEFAULT_COUNT",
-        "100",
+        100,
         jsonConfig,
+        ["session", "allDefaultCount"],
         { min: 1 }
       ),
-      runTimeoutMs: readIntegerSetting("CODEX_RUN_TIMEOUT_MS", "600000", jsonConfig, { min: 0 }),
-      spawnStatusIntervalMs: readIntegerSetting("SPAWN_STATUS_INTERVAL_MS", "15000", jsonConfig, {
-        min: 0
-      }),
-      statusIncludeProject: readBooleanSetting("STATUS_INCLUDE_PROJECT", true, jsonConfig),
+      runTimeoutMs: readIntegerSetting(
+        "CODEX_RUN_TIMEOUT_MS",
+        600000,
+        jsonConfig,
+        ["codex", "runTimeoutMs"],
+        { min: 0 }
+      ),
+      spawnStatusIntervalMs: readIntegerSetting(
+        "SPAWN_STATUS_INTERVAL_MS",
+        30000,
+        jsonConfig,
+        ["codex", "spawn", "statusIntervalMs"],
+        { min: 0 }
+      ),
+      statusIncludeProject: readBooleanSetting(
+        "STATUS_INCLUDE_PROJECT",
+        true,
+        jsonConfig,
+        ["status", "includeProject"]
+      ),
       terminalRenderMode:
-        readSetting("TERMINAL_RENDER_MODE", "markdown", jsonConfig) === "plain" ? "plain" : "markdown",
-      terminalFlushIdleMs: readIntegerSetting("TERMINAL_FLUSH_IDLE_MS", "3000", jsonConfig, { min: 0 }),
-      terminalFlushMaxChars: readIntegerSetting("TERMINAL_FLUSH_MAX_CHARS", "4000", jsonConfig, {
-        min: 0
-      }),
+        readTextSetting("TERMINAL_RENDER_MODE", "markdown", jsonConfig, [
+          "codex",
+          "terminal",
+          "renderMode"
+        ]) === "plain"
+          ? "plain"
+          : "markdown",
+      terminalFlushIdleMs: readIntegerSetting(
+        "TERMINAL_FLUSH_IDLE_MS",
+        3000,
+        jsonConfig,
+        ["codex", "terminal", "flushIdleMs"],
+        { min: 0 }
+      ),
+      terminalFlushMaxChars: readIntegerSetting(
+        "TERMINAL_FLUSH_MAX_CHARS",
+        4000,
+        jsonConfig,
+        ["codex", "terminal", "flushMaxChars"],
+        { min: 0 }
+      ),
       terminalStartupTimeoutMs: readIntegerSetting(
         "TERMINAL_STARTUP_TIMEOUT_MS",
-        "30000",
+        30000,
         jsonConfig,
+        ["codex", "terminal", "startupTimeoutMs"],
         { min: 1 }
       )
     },
     project: {
       allowedRoots: projectAllowedRoots,
       defaultProject,
-      defaultSearchEnabled: readBooleanSetting("DEFAULT_SEARCH_ENABLED", false, jsonConfig)
+      defaultSearchEnabled: readBooleanSetting(
+        "DEFAULT_SEARCH_ENABLED",
+        true,
+        jsonConfig,
+        ["project", "defaultSearchEnabled"]
+      )
     },
-    storePath: readSetting("STORE_PATH", ".data/bindings.json", jsonConfig)
+    storePath: readTextSetting("STORE_PATH", ".data/bindings.json", jsonConfig, ["paths", "storePath"])
   };
-}
-
-interface JsonConfigShape {
-  __path?: string;
-  [key: string]: unknown;
-}
-
-function readSetting(name: string, fallback: string, jsonConfig?: JsonConfigShape): string {
-  const envValue = process.env[name];
-  if (envValue) return envValue;
-  const jsonValue = jsonConfig?.[name];
-  if (typeof jsonValue === "string" && jsonValue.length > 0) return jsonValue;
-  return fallback;
 }
 
 function readIntegerSetting(
   name: string,
-  fallback: string,
+  fallback: number,
   jsonConfig: JsonConfigShape | undefined,
+  jsonPath: string[],
   options: { min: number }
 ): number {
-  const raw = readSetting(name, fallback, jsonConfig);
+  const raw = readScalarSetting(name, fallback, jsonConfig, jsonPath);
   const value = Number(raw);
   if (!Number.isInteger(value) || value < options.min) {
     throw new Error(`${name} must be an integer >= ${options.min}: ${JSON.stringify(raw)}`);
@@ -193,11 +304,12 @@ function readIntegerSetting(
 
 function readNumberSetting(
   name: string,
-  fallback: string,
+  fallback: number,
   jsonConfig: JsonConfigShape | undefined,
+  jsonPath: string[],
   options: { min: number }
 ): number {
-  const raw = readSetting(name, fallback, jsonConfig);
+  const raw = readScalarSetting(name, fallback, jsonConfig, jsonPath);
   const value = Number(raw);
   if (!Number.isFinite(value) || value < options.min) {
     throw new Error(`${name} must be a number >= ${options.min}: ${JSON.stringify(raw)}`);
@@ -220,16 +332,102 @@ function loadJsonConfig(configPath?: string): JsonConfigShape | undefined {
 function readBooleanSetting(
   name: string,
   fallback: boolean,
-  jsonConfig: JsonConfigShape | undefined
+  jsonConfig: JsonConfigShape | undefined,
+  jsonPath: string[]
 ): boolean {
   const envValue = process.env[name];
   if (envValue) return parseBooleanSetting(name, envValue);
-  const jsonValue = jsonConfig?.[name];
+  const jsonValue = readJsonValue(jsonConfig, jsonPath, [name]);
   if (typeof jsonValue === "boolean") return jsonValue;
   if (typeof jsonValue === "string" && jsonValue.trim()) {
     return parseBooleanSetting(name, jsonValue);
   }
   return fallback;
+}
+
+function readTextSetting(
+  name: string,
+  fallback: string,
+  jsonConfig: JsonConfigShape | undefined,
+  jsonPath: string[]
+): string {
+  const envValue = process.env[name];
+  if (envValue) return envValue;
+  const jsonValue = readJsonValue(jsonConfig, jsonPath, [name]);
+  if (typeof jsonValue === "string" && jsonValue.length > 0) {
+    return expandEnvPlaceholders(jsonValue);
+  }
+  return fallback;
+}
+
+function readScalarSetting(
+  name: string,
+  fallback: string | number | boolean,
+  jsonConfig: JsonConfigShape | undefined,
+  jsonPath: string[]
+): string | number | boolean {
+  const envValue = process.env[name];
+  if (envValue) return envValue;
+  const jsonValue = readJsonValue(jsonConfig, jsonPath, [name]);
+  if (
+    typeof jsonValue === "string" ||
+    typeof jsonValue === "number" ||
+    typeof jsonValue === "boolean"
+  ) {
+    return typeof jsonValue === "string" ? expandEnvPlaceholders(jsonValue) : jsonValue;
+  }
+  return fallback;
+}
+
+function readRootsSetting(
+  name: string,
+  jsonConfig: JsonConfigShape | undefined,
+  jsonPath: string[],
+  primaryRoot: string
+): string[] {
+  const envValue = process.env[name];
+  if (envValue) {
+    return parseRootsSetting(envValue, primaryRoot);
+  }
+  const jsonValue = readJsonValue(jsonConfig, jsonPath, [name]);
+  if (Array.isArray(jsonValue)) {
+    return normalizeRoots(
+      jsonValue
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => expandEnvPlaceholders(item)),
+      primaryRoot
+    );
+  }
+  if (typeof jsonValue === "string" && jsonValue.trim()) {
+    return parseRootsSetting(expandEnvPlaceholders(jsonValue), primaryRoot);
+  }
+  return normalizeRoots([], primaryRoot);
+}
+
+function readJsonValue(
+  jsonConfig: JsonConfigShape | undefined,
+  jsonPath: string[],
+  legacyKeys: string[] = []
+): unknown {
+  const nested = getNestedValue(jsonConfig, jsonPath);
+  if (nested !== undefined) return nested;
+  for (const key of legacyKeys) {
+    if (jsonConfig && key in jsonConfig) {
+      return jsonConfig[key];
+    }
+  }
+  return undefined;
+}
+
+function getNestedValue(value: unknown, jsonPath: string[]): unknown {
+  let current: unknown = value;
+  for (const segment of jsonPath) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
 }
 
 function parseBooleanSetting(name: string, raw: string): boolean {
@@ -240,12 +438,25 @@ function parseBooleanSetting(name: string, raw: string): boolean {
 }
 
 function parseRootsSetting(raw: string, primaryRoot: string): string[] {
-  const parts = raw
+  return normalizeRoots(
+    raw
     .split(",")
     .map((part) => part.trim())
     .filter(Boolean)
-    .map((part) => path.resolve(part));
-  return Array.from(new Set([path.resolve(primaryRoot), ...parts]));
+    .map((part) => path.resolve(part)),
+    primaryRoot
+  );
+}
+
+function normalizeRoots(parts: string[], primaryRoot: string): string[] {
+  return Array.from(new Set([path.resolve(primaryRoot), ...parts.map((part) => path.resolve(part))]));
+}
+
+function expandEnvPlaceholders(value: string): string {
+  return value.replace(/\$(\w+)|\$\{([^}]+)\}/g, (_, simpleName: string, bracketName: string) => {
+    const variableName = simpleName || bracketName;
+    return process.env[variableName] || "";
+  });
 }
 
 function isUnderAnyRoot(target: string, roots: string[]): boolean {

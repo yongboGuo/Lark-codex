@@ -1,19 +1,49 @@
 {
-  "LOG_LEVEL": "info",
-  "DEFAULT_SEARCH_ENABLED": "true",
-  "CODEX_BACKEND_MODE": "spawn",
-  "CODEX_SANDBOX_MODE": "danger-full-access",
-  "FEISHU_SEND_RETRY_MAX_ATTEMPTS": "5",
-  "FEISHU_SEND_RETRY_BASE_DELAY_MS": "1000",
-  "FEISHU_SEND_RETRY_MULTIPLIER": "2",
-  "FEISHU_SEND_RETRY_MAX_DELAY_MS": "10000",
-  "CODEX_SESSION_LIST_DEFAULT_COUNT": "20",
-  "CODEX_SESSION_ALL_DEFAULT_COUNT": "100",
-  "CODEX_RUN_TIMEOUT_MS": "600000",
-  "SPAWN_STATUS_INTERVAL_MS": "30000",
-  "STATUS_INCLUDE_PROJECT": "true",
-  "TERMINAL_RENDER_MODE": "markdown",
-  "TERMINAL_FLUSH_IDLE_MS": "3000",
-  "TERMINAL_FLUSH_MAX_CHARS": "4000",
-  "TERMINAL_STARTUP_TIMEOUT_MS": "30000"
+  "app": {
+    "logLevel": "info",
+    "port": 3300
+  },
+  "feishu": {
+    "sendRetry": {
+      "maxAttempts": 5,
+      "baseDelayMs": 1000,
+      "multiplier": 2,
+      "maxDelayMs": 10000
+    }
+  },
+  "codex": {
+    "bin": "codex",
+    "profileMode": "isolated",
+    "home": "$HOME/.codex-feishu-bridge",
+    "sessionsDir": "$HOME/.codex-feishu-bridge/sessions",
+    "backendMode": "spawn",
+    "sandboxMode": "danger-full-access",
+    "runTimeoutMs": 600000,
+    "spawn": {
+      "statusIntervalMs": 30000
+    },
+    "terminal": {
+      "renderMode": "markdown",
+      "flushIdleMs": 3000,
+      "flushMaxChars": 4000,
+      "startupTimeoutMs": 30000
+    }
+  },
+  "session": {
+    "listDefaultCount": 20,
+    "allDefaultCount": 100
+  },
+  "project": {
+    "allowedRoots": [
+      "$HOME"
+    ],
+    "defaultPath": "$HOME",
+    "defaultSearchEnabled": true
+  },
+  "status": {
+    "includeProject": true
+  },
+  "paths": {
+    "storePath": "$HOME/.local/share/codex-feishu-bridge/bindings.json"
+  }
 }

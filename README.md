@@ -54,7 +54,7 @@ Working v1 bridge:
 - `/help` `/status` `/new` `/resume` `/session` `/stop` `/project` `/approvals`
 - `/search` `/model` `/profile`
 - `/git` `/pwd` `/ls` `/cat` `/tree` `/find` `/rg`
-- `/project bind <path>` to rebind a conversation to another directory under `PROJECT_ALLOWED_ROOTS`
+- `/project bind <path>` to rebind a conversation to another directory under the allowed project roots
 - `/approvals auto|full-access` to switch the Codex sandbox mode used for future runs
 - backend modes: `spawn` now, `app-server` and `terminal` reserved as experimental
 
@@ -80,6 +80,8 @@ npm run install:local
 
 - Repo-owned systemd template: `deploy/systemd/codex-feishu-bridge.service.in`
 - User config templates: `deploy/config/bridge.env.example` and `deploy/config/config.json`
+- `config.json` is the primary bridge config. `bridge.env` is only for secrets,
+  proxy/custom-CA settings, the config path, and similar process env.
 - Optional startup-ready notification: set `FEISHU_STARTUP_NOTIFY_CHAT_ID` in `bridge.env`
   to get a one-time Feishu message after the websocket is connected and outbound
   message sending is working.
@@ -97,12 +99,16 @@ npm run install:local
   already exist.
 - Machine-specific proxy or custom CA settings should live in
   `~/.config/codex-feishu-bridge/bridge.env`, not in the repo-owned systemd unit template.
-- Project access is controlled by `PROJECT_ALLOWED_ROOTS`. `DEFAULT_PROJECT` must stay under
-  one of those allowed roots.
-- `DEFAULT_SEARCH_ENABLED=true` makes new conversations and `/new` sessions default to live web search enabled.
-- On a fresh install, `~/.config/codex-feishu-bridge/config.json` defaults
-  `CODEX_SANDBOX_MODE` to `danger-full-access`. Change that file if you want
-  `workspace-write` instead.
+- Fresh installs rewrite the checked-in JSON template into a usable local config:
+  `project.defaultPath` becomes the current checkout and `project.allowedRoots`
+  includes that checkout.
+- Project access is controlled by `project.allowedRoots`. `project.defaultPath`
+  must stay under one of those allowed roots.
+- `project.defaultSearchEnabled=true` makes new conversations and `/new`
+  sessions default to live web search enabled.
+- The checked-in JSON template defaults `codex.sandboxMode` to
+  `danger-full-access`. Change `config.json` if you want `workspace-write`
+  instead.
 - The script asks for confirmation, then installs or updates the unit, reloads user systemd,
   enables the service, and performs a hard restart.
 
@@ -110,20 +116,38 @@ For local testing without Feishu, run `npm run cli -- --chat-id test-terminal`. 
 
 ## Backend Mode
 
-- `CODEX_BACKEND_MODE=spawn` is the supported mode. Each turn spawns `codex exec` or `codex exec resume`, while the bridge persists the native session id.
+- `codex.backendMode = "spawn"` is the supported mode. Each turn spawns
+  `codex exec` or `codex exec resume`, while the bridge persists the native
+  session id.
 - `spawn` now emits lightweight progress updates such as session start, thinking, long-run heartbeat, and upstream websocket retry notices when Codex exposes them.
-- `CODEX_BACKEND_MODE=app-server` is experimental. It keeps a local `codex app-server` subprocess per bound native session and talks to it over stdio JSON-RPC for `thread/start`, `thread/resume`, `turn/start`, and `turn/interrupt`.
-- `CODEX_BACKEND_MODE=terminal` is experimental. It is intended for a terminal-derived Codex experience projected into Feishu, but the current Codex interactive CLI is still a full-screen TUI and not yet reliable enough to use as the default backend.
-- `CODEX_SANDBOX_MODE=workspace-write` maps to Codex `--full-auto`.
-- `CODEX_SANDBOX_MODE=danger-full-access` maps to Codex `--dangerously-bypass-approvals-and-sandbox`.
+- `codex.backendMode = "app-server"` is experimental. It keeps a local
+  `codex app-server` subprocess per bound native session and talks to it over
+  stdio JSON-RPC for `thread/start`, `thread/resume`, `turn/start`, and
+  `turn/interrupt`.
+- `codex.backendMode = "terminal"` is experimental. It is intended for a
+  terminal-derived Codex experience projected into Feishu, but the current
+  Codex interactive CLI is still a full-screen TUI and not yet reliable enough
+  to use as the default backend.
+- `codex.sandboxMode = "workspace-write"` maps to Codex `--full-auto`.
+- `codex.sandboxMode = "danger-full-access"` maps to Codex `--dangerously-bypass-approvals-and-sandbox`.
 - The checked-in user-service JSON template defaults to `danger-full-access`.
-- `CODEX_RUN_TIMEOUT_MS` controls the maximum lifetime of one active Codex run before the bridge terminates it.
-- `SPAWN_STATUS_INTERVAL_MS` controls the heartbeat interval for long-running `spawn` turns. Set it to `0` to disable heartbeats.
-- `FEISHU_SEND_RETRY_MAX_ATTEMPTS`, `FEISHU_SEND_RETRY_BASE_DELAY_MS`, `FEISHU_SEND_RETRY_MULTIPLIER`, and `FEISHU_SEND_RETRY_MAX_DELAY_MS` control retry/backoff for transient Feishu send failures such as `502`, `429`, and short network errors. `FEISHU_SEND_RETRY_MAX_ATTEMPTS=0` means one send attempt with no retry.
+- `codex.runTimeoutMs` controls the maximum lifetime of one active Codex run
+  before the bridge terminates it.
+- `codex.spawn.statusIntervalMs` controls the heartbeat interval for long-running
+  `spawn` turns. Set it to `0` to disable heartbeats.
+- `feishu.sendRetry.maxAttempts`, `feishu.sendRetry.baseDelayMs`,
+  `feishu.sendRetry.multiplier`, and `feishu.sendRetry.maxDelayMs` control
+  retry/backoff for transient Feishu send failures such as `502`, `429`, and
+  short network errors. `maxAttempts = 0` means one send attempt with no retry.
 - Outbound Feishu replies currently use interactive cards with a schema `2.0` markdown body, card title, chat-list summary, and per-reply header template color.
-- `TERMINAL_FLUSH_IDLE_MS` controls the quiet window before terminal output is projected back to Feishu as one reply.
-- `TERMINAL_FLUSH_MAX_CHARS` caps one terminal-mode Feishu reply so noisy screens do not flood the chat.
+- `codex.terminal.flushIdleMs` controls the quiet window before terminal output
+  is projected back to Feishu as one reply.
+- `codex.terminal.flushMaxChars` caps one terminal-mode Feishu reply so noisy
+  screens do not flood the chat.
 - Numeric config values must be integers. Invalid values now fail fast during startup.
+
+The bridge still accepts the old env-style JSON keys as a compatibility fallback,
+but new config should use the structured schema.
 
 ## Feishu Rendering
 
@@ -134,8 +158,10 @@ For local testing without Feishu, run `npm run cli -- --chat-id test-terminal`. 
 
 ## Codex Profile Mode
 
-- `CODEX_PROFILE_MODE=isolated` gives the bridge its own Codex home. This is the default in development and is the safest mode for testing.
-- `CODEX_PROFILE_MODE=personal` points the bridge at your personal `~/.codex` so Feishu and your local terminal can reuse the same Codex sessions.
+- `codex.profileMode = "isolated"` gives the bridge its own Codex home. This is
+  the default in development and is the safest mode for testing.
+- `codex.profileMode = "personal"` points the bridge at your personal `~/.codex`
+  so Feishu and your local terminal can reuse the same Codex sessions.
 - `personal + spawn` is currently a compatibility mode, not the safest one. It may interfere with an interactive Codex instance that is already running against the same home.
 
 ## Session Binding

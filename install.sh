@@ -20,7 +20,7 @@ echo "repo: ${ROOT_DIR}"
 echo "unit: ${UNIT_PATH}"
 echo "config: ${ENV_PATH}"
 echo "config: ${JSON_PATH}"
-echo "note: fresh installs default CODEX_SANDBOX_MODE to danger-full-access via ${JSON_PATH}"
+echo "note: config.json is the primary bridge config; bridge.env is only for secrets and process env."
 read -r -p "Continue? [y/N] " CONFIRM
 if [[ ! "${CONFIRM}" =~ ^[Yy]$ ]]; then
   echo "aborted"
@@ -63,17 +63,41 @@ import sys
 
 env_path = Path(sys.argv[1])
 user_home = sys.argv[2]
-root_dir = sys.argv[3]
 text = env_path.read_text()
 text = text.replace("$HOME", user_home)
-text = text.replace("DEFAULT_PROJECT=" + user_home, "DEFAULT_PROJECT=" + root_dir)
-text = text.replace("PROJECT_ALLOWED_ROOTS=" + user_home, "PROJECT_ALLOWED_ROOTS=" + root_dir)
 env_path.write_text(text)
 PY
 fi
 
 if [[ ! -f "${JSON_PATH}" ]]; then
   cp "${JSON_TEMPLATE}" "${JSON_PATH}"
+  python3 - "${JSON_PATH}" "${USER_HOME}" "${ROOT_DIR}" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+json_path = Path(sys.argv[1])
+user_home = sys.argv[2]
+root_dir = sys.argv[3]
+data = json.loads(json_path.read_text())
+
+def replace_home(value):
+    if isinstance(value, str):
+        return value.replace("$HOME", user_home)
+    if isinstance(value, list):
+        return [replace_home(item) for item in value]
+    if isinstance(value, dict):
+        return {key: replace_home(item) for key, item in value.items()}
+    return value
+
+data = replace_home(data)
+project = data.setdefault("project", {})
+allowed_roots = project.setdefault("allowedRoots", [user_home])
+if root_dir not in allowed_roots:
+    allowed_roots.append(root_dir)
+project["defaultPath"] = root_dir
+json_path.write_text(json.dumps(data, indent=2) + "\n")
+PY
 fi
 
 sed \
