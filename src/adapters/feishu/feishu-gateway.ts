@@ -77,7 +77,7 @@ export class FeishuGateway {
   async send(message: OutgoingMessage): Promise<void> {
     const text = message.text || "";
     for (const chunk of splitMessageText(text, FEISHU_POST_SOFT_LIMIT)) {
-      await this.sendChunkWithRetry(message.chatId, chunk);
+      await this.sendChunkWithRetry(message.chatId, chunk, message.title);
     }
   }
 
@@ -107,7 +107,7 @@ export class FeishuGateway {
     }
   }
 
-  private async sendChunkWithRetry(chatId: string, chunk: string): Promise<void> {
+  private async sendChunkWithRetry(chatId: string, chunk: string, title?: string): Promise<void> {
     let lastError: unknown;
     const configuredAttempts = this.config.sendRetryMaxAttempts;
     const attempts = Math.max(1, configuredAttempts);
@@ -121,7 +121,7 @@ export class FeishuGateway {
           data: {
             receive_id: chatId,
             msg_type: "post",
-            content: buildMarkdownPostContent(chunk)
+            content: buildMarkdownPostContent(chunk, title)
           }
         });
         console.log("Feishu outbound message sent", {
@@ -300,11 +300,12 @@ function splitMessageText(text: string, maxChars: number): string[] {
   return chunks.length > 0 ? chunks : [text];
 }
 
-function buildMarkdownPostContent(text: string): string {
+function buildMarkdownPostContent(text: string, title?: string): string {
   const rendered = text.trim();
   const fenced = wrapRawMarkdown(rendered);
   return JSON.stringify({
     zh_cn: {
+      title: title?.trim() || undefined,
       content: [[{ tag: "md", text: `${rendered}\n\n${fenced}` }]]
     }
   });

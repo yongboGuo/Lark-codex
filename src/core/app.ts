@@ -49,6 +49,10 @@ export class App {
     }
     this.feishu = new FeishuGateway(this.config.feishu);
     await this.feishu.start(async (message) => {
+      const command = parseCommand(message);
+      const messageTitle = this.titleForCommand(command?.name);
+      const formatForFeishu = (text: string): string =>
+        command?.name ? this.stripLeadingMarkdownHeading(text) : text;
       try {
         let streamed = false;
         let lastUpdateText: string | undefined;
@@ -56,12 +60,13 @@ export class App {
           try {
             await this.feishu?.send({
               chatId: message.chatId,
-              text: update,
+              title: messageTitle,
+              text: formatForFeishu(update),
               replyToMessageId: message.messageId,
               threadId: message.threadId
             });
             streamed = true;
-            lastUpdateText = update;
+            lastUpdateText = formatForFeishu(update);
           } catch (error) {
             console.error("failed to send Feishu update", {
               messageId: message.messageId,
@@ -74,10 +79,12 @@ export class App {
         };
 
         const text = await this.handleIncoming(message, sendUpdateSafely);
-        if ((text && text !== lastUpdateText) || !streamed) {
+        const formattedText = formatForFeishu(text);
+        if ((formattedText && formattedText !== lastUpdateText) || !streamed) {
           await this.feishu?.send({
             chatId: message.chatId,
-            text,
+            title: messageTitle,
+            text: formattedText,
             replyToMessageId: message.messageId,
             threadId: message.threadId
           });
@@ -94,6 +101,7 @@ export class App {
         try {
           await this.feishu?.send({
             chatId: message.chatId,
+            title: messageTitle || "Bridge Error",
             text: `bridge error: ${text}`,
             replyToMessageId: message.messageId,
             threadId: message.threadId
@@ -670,6 +678,61 @@ export class App {
       `- **sandbox**: \`${this.config.codex.sandboxMode}\``,
       `- **search default**: \`${this.config.project.defaultSearchEnabled ? "on" : "off"}\``
     ].join("\n");
+  }
+
+  private titleForCommand(commandName?: string): string {
+    switch (commandName) {
+      case "help":
+        return "Bridge Help";
+      case "status":
+        return "Bridge Status";
+      case "new":
+        return "New Session";
+      case "session":
+        return "Session";
+      case "resume":
+        return "Resume Session";
+      case "stop":
+        return "Stop";
+      case "project":
+        return "Project";
+      case "git":
+        return "Git";
+      case "pwd":
+        return "PWD";
+      case "ls":
+        return "LS";
+      case "cat":
+        return "Cat";
+      case "tree":
+        return "Tree";
+      case "find":
+        return "Find";
+      case "rg":
+        return "RG";
+      case "approvals":
+        return "Approvals";
+      case "search":
+        return "Search";
+      case "model":
+        return "Model";
+      case "profile":
+        return "Profile";
+      default:
+        return "Codex";
+    }
+  }
+
+  private stripLeadingMarkdownHeading(text: string): string {
+    const normalized = text.replace(/\r\n/g, "\n");
+    if (!normalized.startsWith("# ")) {
+      return text;
+    }
+    const firstNewline = normalized.indexOf("\n");
+    if (firstNewline < 0) {
+      return "";
+    }
+    return normalized.slice(firstNewline + 1).replace(/^\n+/, "");
   }
 
   private makeBinding(

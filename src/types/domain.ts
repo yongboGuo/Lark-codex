@@ -32,8 +32,8 @@ export interface IncomingMessage {
 
 export interface OutgoingMessage {
   chatId: string;
+  title?: string;
   text?: string;
-  card?: Record<string, unknown>;
   replyToMessageId?: string;
   threadId?: string;
 }
