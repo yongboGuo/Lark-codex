@@ -26,6 +26,13 @@ export interface AppConfig {
     appSecret: string;
     botOpenId: string;
     startupNotifyChatId?: string;
+    allowedOpenIds: string[];
+    allowedChatIds: string[];
+    allowAllOpenIds: boolean;
+    groupRequireMention: boolean;
+    groupRequireCommandPrefix: boolean;
+    commandPrefix: string;
+    replyMode: "interactive" | "text" | "reply";
     connectionMode: "websocket";
     wsLoggerLevel: "error" | "warn" | "info" | "debug" | "trace";
     reconnectReadyDebounceMs: number;
@@ -67,6 +74,13 @@ interface JsonConfigShape {
     logLevel?: unknown;
   };
   feishu?: {
+    allowedOpenIds?: unknown;
+    allowedChatIds?: unknown;
+    allowAllOpenIds?: unknown;
+    groupRequireMention?: unknown;
+    groupRequireCommandPrefix?: unknown;
+    commandPrefix?: unknown;
+    replyMode?: unknown;
     wsLoggerLevel?: unknown;
     reconnectReadyDebounceMs?: unknown;
     sendRetry?: {
@@ -147,7 +161,7 @@ export function loadConfig(): AppConfig {
       ? path.join(homeDir, ".codex")
       : path.join(
           homeDir,
-          nodeEnv === "development" ? ".codex-feishu-bridge-dev" : ".codex-feishu-bridge"
+          nodeEnv === "development" ? ".lark-codex-dev" : ".lark-codex"
         );
 
   const codexBackendMode = readTextSetting("CODEX_BACKEND_MODE", "spawn", jsonConfig, [
@@ -164,6 +178,42 @@ export function loadConfig(): AppConfig {
       appSecret: required("FEISHU_APP_SECRET"),
       botOpenId: required("FEISHU_BOT_OPEN_ID"),
       startupNotifyChatId: optional("FEISHU_STARTUP_NOTIFY_CHAT_ID", "").trim() || undefined,
+      allowedOpenIds: readStringArraySetting(
+        "FEISHU_ALLOWED_OPEN_IDS",
+        [],
+        jsonConfig,
+        ["feishu", "allowedOpenIds"]
+      ),
+      allowedChatIds: readStringArraySetting(
+        "FEISHU_ALLOWED_CHAT_IDS",
+        [],
+        jsonConfig,
+        ["feishu", "allowedChatIds"]
+      ),
+      allowAllOpenIds: readBooleanSetting(
+        "FEISHU_ALLOW_ALL_OPEN_IDS",
+        false,
+        jsonConfig,
+        ["feishu", "allowAllOpenIds"]
+      ),
+      groupRequireMention: readBooleanSetting(
+        "FEISHU_GROUP_REQUIRE_MENTION",
+        true,
+        jsonConfig,
+        ["feishu", "groupRequireMention"]
+      ),
+      groupRequireCommandPrefix: readBooleanSetting(
+        "FEISHU_GROUP_REQUIRE_COMMAND_PREFIX",
+        false,
+        jsonConfig,
+        ["feishu", "groupRequireCommandPrefix"]
+      ),
+      commandPrefix:
+        readTextSetting("FEISHU_COMMAND_PREFIX", "codex", jsonConfig, ["feishu", "commandPrefix"])
+          .trim() || "codex",
+      replyMode: normalizeReplyMode(
+        readTextSetting("FEISHU_REPLY_MODE", "reply", jsonConfig, ["feishu", "replyMode"])
+      ),
       connectionMode: "websocket",
       wsLoggerLevel: normalizeFeishuLoggerLevel(
         readTextSetting("FEISHU_WS_LOGGER_LEVEL", "info", jsonConfig, ["feishu", "wsLoggerLevel"])
@@ -332,6 +382,17 @@ function normalizeFeishuLoggerLevel(value: string): AppConfig["feishu"]["wsLogge
   }
 }
 
+function normalizeReplyMode(value: string): AppConfig["feishu"]["replyMode"] {
+  const normalized = value.trim().toLowerCase();
+  switch (normalized) {
+    case "interactive":
+    case "text":
+      return normalized;
+    default:
+      return "reply";
+  }
+}
+
 function readIntegerSetting(
   name: string,
   fallback: number,
@@ -449,6 +510,28 @@ function readRootsSetting(
   return normalizeRoots([], primaryRoot);
 }
 
+function readStringArraySetting(
+  name: string,
+  fallback: string[],
+  jsonConfig: JsonConfigShape | undefined,
+  jsonPath: string[]
+): string[] {
+  const envValue = process.env[name];
+  if (envValue) {
+    return parseStringArraySetting(envValue);
+  }
+  const jsonValue = readJsonValue(jsonConfig, jsonPath, [name]);
+  if (Array.isArray(jsonValue)) {
+    return normalizeStringArraySetting(
+      jsonValue.filter((item): item is string => typeof item === "string")
+    );
+  }
+  if (typeof jsonValue === "string" && jsonValue.trim()) {
+    return parseStringArraySetting(jsonValue);
+  }
+  return normalizeStringArraySetting(fallback);
+}
+
 function readJsonValue(
   jsonConfig: JsonConfigShape | undefined,
   jsonPath: string[],
@@ -485,12 +568,20 @@ function parseBooleanSetting(name: string, raw: string): boolean {
 function parseRootsSetting(raw: string, primaryRoot: string): string[] {
   return normalizeRoots(
     raw
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .map((part) => path.resolve(part)),
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => path.resolve(part)),
     primaryRoot
   );
+}
+
+function parseStringArraySetting(raw: string): string[] {
+  return normalizeStringArraySetting(raw.split(","));
+}
+
+function normalizeStringArraySetting(items: string[]): string[] {
+  return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
 }
 
 function normalizeRoots(parts: string[], primaryRoot: string): string[] {

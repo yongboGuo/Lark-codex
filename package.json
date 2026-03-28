@@ -1,11 +1,11 @@
 {
-  "name": "codex-feishu-bridge",
+  "name": "lark-codex",
   "version": "0.1.0",
   "private": true,
-  "description": "Thin Feishu-native bridge for Codex native sessions.",
+  "description": "Feishu/Lark-native Codex bridge for direct chat and group workflows.",
   "type": "module",
   "bin": {
-    "codex-feishu-bridge": "./bin/codex-feishu-bridge.js"
+    "lark-codex": "./bin/lark-codex.js"
   },
   "files": [
     "bin",

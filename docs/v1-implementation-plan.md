@@ -2,10 +2,10 @@
 
 ## Goal
 
-Deliver a first working version of `codex-feishu-bridge` that:
+Deliver a working version of `lark-codex` that:
 
-- receives Feishu DM text messages
-- binds each DM conversation to a real native Codex session
+- receives Feishu DM and group text messages
+- binds each DM conversation or group thread to a real native Codex session
 - sends user input into Codex
 - returns Codex output to Feishu
 - supports a minimal command set
@@ -15,7 +15,7 @@ Deliver a first working version of `codex-feishu-bridge` that:
 
 A v1 build is successful when all of the following work:
 
-1. Feishu bot can receive a DM text message.
+1. Feishu bot can receive a DM or group text message.
 2. The bridge normalizes it and resolves a conversation key.
 3. If no binding exists, the bridge creates a real native Codex session.
 4. If a binding exists, the bridge resumes that native Codex session.
@@ -27,7 +27,6 @@ A v1 build is successful when all of the following work:
 
 ## Explicit non-goals for v1
 
-- group-chat support as a first-class path
 - rich interactive card UX as a requirement
 - image/file input support
 - multi-provider backend support

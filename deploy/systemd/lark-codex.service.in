@@ -1,12 +1,12 @@
 [Unit]
-Description=Codex Feishu Bridge
+Description=Lark Codex
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=@HOME@
-EnvironmentFile=%h/.config/codex-feishu-bridge/bridge.env
+EnvironmentFile=%h/.config/lark-codex/bridge.env
 Environment=HOME=@HOME@
 Environment=TMPDIR=/tmp
 Environment=PATH=@PATH@

@@ -2,9 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-UNIT_NAME="codex-feishu-bridge.service"
+UNIT_NAME="lark-codex.service"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
-CONFIG_DIR="${CONFIG_HOME}/codex-feishu-bridge"
+CONFIG_DIR="${CONFIG_HOME}/lark-codex"
 SYSTEMD_DIR="${CONFIG_HOME}/systemd/user"
 UNIT_TEMPLATE="${ROOT_DIR}/deploy/systemd/${UNIT_NAME}.in"
 UNIT_PATH="${SYSTEMD_DIR}/${UNIT_NAME}"
@@ -38,7 +38,7 @@ npm run build
 PACK_FILE="$(npm pack --json | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['filename'])")"
 GLOBAL_PREFIX="$(npm prefix -g)"
 GLOBAL_ROOT="$(npm root -g)"
-GLOBAL_PKG_DIR="${GLOBAL_ROOT}/codex-feishu-bridge"
+GLOBAL_PKG_DIR="${GLOBAL_ROOT}/lark-codex"
 GLOBAL_BIN_DIR="${GLOBAL_PREFIX}/bin"
 
 mkdir -p "${GLOBAL_ROOT}" "${GLOBAL_BIN_DIR}"
@@ -46,13 +46,13 @@ mv "${GLOBAL_PKG_DIR}" "${GLOBAL_PKG_DIR}.bak.$(date +%s)" 2>/dev/null || true
 mkdir -p "${GLOBAL_PKG_DIR}"
 tar -xzf "./${PACK_FILE}" -C "${GLOBAL_PKG_DIR}" --strip-components=1
 cp -a node_modules "${GLOBAL_PKG_DIR}/"
-ln -sf "${GLOBAL_PKG_DIR}/bin/codex-feishu-bridge.js" "${GLOBAL_BIN_DIR}/codex-feishu-bridge"
-chmod +x "${GLOBAL_PKG_DIR}/bin/codex-feishu-bridge.js" "${GLOBAL_BIN_DIR}/codex-feishu-bridge"
+ln -sf "${GLOBAL_PKG_DIR}/bin/lark-codex.js" "${GLOBAL_BIN_DIR}/lark-codex"
+chmod +x "${GLOBAL_PKG_DIR}/bin/lark-codex.js" "${GLOBAL_BIN_DIR}/lark-codex"
 rm -f "${PACK_FILE}"
 
-BIN_PATH="$(command -v codex-feishu-bridge || true)"
+BIN_PATH="$(command -v lark-codex || true)"
 if [[ -z "${BIN_PATH}" ]]; then
-  echo "codex-feishu-bridge not found on PATH after npm install -g ." >&2
+  echo "lark-codex not found on PATH after npm install -g ." >&2
   exit 1
 fi
 

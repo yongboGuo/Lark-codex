@@ -2,7 +2,7 @@
 
 ## One-line definition
 
-`codex-feishu-bridge` is a thin relay that binds Feishu conversations to native Codex sessions and projects Codex output back into Feishu.
+`lark-codex` is a thin relay that binds Feishu conversations to native Codex sessions and projects Codex output back into Feishu.
 
 ## Core model
 
@@ -16,7 +16,7 @@ The bridge must not maintain a second full conversation store.
 
 ## Main flow
 
-1. Feishu receives a message event.
+1. Feishu receives a DM, group, or threaded message event.
 2. The bridge normalizes the event into an internal input shape.
 3. The router resolves the target project and Codex session binding.
 4. If no binding exists, the bridge creates a new native Codex session.
@@ -50,6 +50,7 @@ Responsibilities:
 - inbound event parsing
 - outbound text/card sending
 - dedup handling
+- mention and thread extraction
 
 ### 2. Router
 Responsibilities:
@@ -79,7 +80,7 @@ Responsibilities:
 ## Session policy
 
 ### Principle
-A Feishu thread or DM should map to one active Codex native session unless the user explicitly starts a new one.
+A Feishu DM, group thread, or group chat should map to one active Codex native session unless the user explicitly starts a new one.
 
 ### Commands
 - `/new`: create a fresh Codex session and rebind current conversation

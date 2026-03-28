@@ -2,15 +2,15 @@
 
 ## Selected working name
 
-**codex-feishu-bridge**
+**Lark-codex**
 
 ## Why this name
 
-- explicit and unambiguous
-- describes exactly what the project does
-- low marketing overhead
-- good as an implementation repo name
+- keeps the Codex identity clear
+- fits both Feishu and Lark usage
+- reads better as a public GitHub repo name
+- matches the installed binary and service name
 
 ## Short product description
 
-A thin Feishu-native bridge for Codex native sessions.
+A Feishu/Lark-native bridge for Codex native sessions.

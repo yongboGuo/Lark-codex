@@ -32,7 +32,7 @@ export class App {
   }
 
   async start(): Promise<void> {
-    console.log("codex-feishu-bridge starting", {
+    console.log("lark-codex starting", {
       nodeEnv: this.config.nodeEnv,
       configPath: this.config.configPath,
       projectAllowedRoots: this.config.project.allowedRoots,
@@ -51,11 +51,22 @@ export class App {
     this.feishu = new FeishuGateway(this.config.feishu);
     await this.feishu.start(
       async (message) => {
-        const command = parseCommand(message);
-        const currentBinding = await this.store.get(conversationKeyFor(message));
+        const preparedMessage = this.prepareIncomingMessage(message);
+        if (!preparedMessage) {
+          console.log("bridge ignored message", {
+            messageId: message.messageId,
+            chatId: message.chatId,
+            chatType: message.chatType,
+            threadId: message.threadId,
+            textPreview: this.previewText(message.text)
+          });
+          return;
+        }
+
+        const command = parseCommand(preparedMessage);
+        const currentBinding = await this.store.get(conversationKeyFor(preparedMessage));
         const messageTitle = this.titleForCommand(command?.name);
         const messageTemplate = this.templateForCommand(command?.name);
-        const messageFooter = this.footerForMessage(command?.name, currentBinding);
         const formatForFeishu = (text: string): string =>
           command?.name ? this.stripLeadingMarkdownHeading(text) : text;
         try {
@@ -64,53 +75,62 @@ export class App {
           const sendUpdateSafely = async (update: string): Promise<void> => {
             try {
               const latestBinding =
-                (await this.store.get(conversationKeyFor(message))) || currentBinding;
+                (await this.store.get(conversationKeyFor(preparedMessage))) || currentBinding;
               await this.feishu?.send({
-                chatId: message.chatId,
+                chatId: preparedMessage.chatId,
                 title: messageTitle,
                 template: messageTemplate,
                 footer: command?.name
                   ? this.footerForMessage(command?.name, latestBinding)
                   : this.footerForCodexReply(latestBinding),
                 text: formatForFeishu(update),
-                replyToMessageId: message.messageId,
-                threadId: message.threadId
+                replyToMessageId: preparedMessage.messageId,
+                threadId: preparedMessage.threadId
               });
               streamed = true;
               lastUpdateText = formatForFeishu(update);
             } catch (error) {
               console.error("failed to send Feishu update", {
-                messageId: message.messageId,
-                chatId: message.chatId,
-                threadId: message.threadId,
+                messageId: preparedMessage.messageId,
+                chatId: preparedMessage.chatId,
+                threadId: preparedMessage.threadId,
                 textPreview: this.previewText(update),
                 error
               });
             }
           };
 
-          const text = await this.handleIncoming(message, sendUpdateSafely);
+          const text = await this.handleIncoming(preparedMessage, sendUpdateSafely);
           const formattedText = formatForFeishu(text);
-          if ((formattedText && formattedText !== lastUpdateText) || !streamed) {
+          if (!formattedText) {
+            console.log("bridge handled message without reply", {
+              messageId: preparedMessage.messageId,
+              chatId: preparedMessage.chatId,
+              threadId: preparedMessage.threadId,
+              streamed
+            });
+            return;
+          }
+          if (formattedText !== lastUpdateText || !streamed) {
             const latestBinding =
-              (await this.store.get(conversationKeyFor(message))) || currentBinding;
+              (await this.store.get(conversationKeyFor(preparedMessage))) || currentBinding;
             const finalFooter = command?.name
               ? this.footerForMessage(command?.name, latestBinding)
               : this.footerForCodexReply(latestBinding);
             await this.feishu?.send({
-              chatId: message.chatId,
+              chatId: preparedMessage.chatId,
               title: messageTitle,
               template: messageTemplate,
               footer: finalFooter,
               text: formattedText,
-              replyToMessageId: message.messageId,
-              threadId: message.threadId
+              replyToMessageId: preparedMessage.messageId,
+              threadId: preparedMessage.threadId
             });
           }
           console.log("bridge handled message", {
-            messageId: message.messageId,
-            chatId: message.chatId,
-            threadId: message.threadId,
+            messageId: preparedMessage.messageId,
+            chatId: preparedMessage.chatId,
+            threadId: preparedMessage.threadId,
             streamed,
             finalPreview: this.previewText(text)
           });
@@ -118,13 +138,13 @@ export class App {
           const text = error instanceof Error ? error.message : "Unknown bridge error.";
           try {
             await this.feishu?.send({
-              chatId: message.chatId,
+              chatId: preparedMessage.chatId,
               title: messageTitle || "Bridge Error",
               template: "red",
               footer: this.buildIsoFooter(),
               text: `bridge error: ${text}`,
-              replyToMessageId: message.messageId,
-              threadId: message.threadId
+              replyToMessageId: preparedMessage.messageId,
+              threadId: preparedMessage.threadId
             });
           } catch (sendError) {
             console.error("failed to send bridge error to Feishu", sendError);
@@ -135,24 +155,33 @@ export class App {
         await this.sendStartupReadyNotification("Reconnected", "Feishu reconnect ready notification sent");
       }
     );
-    await this.sendStartupReadyNotification("Bridge Ready", "Feishu startup ready notification sent");
+    await this.sendStartupReadyNotification("Lark Codex Ready", "Feishu startup ready notification sent");
   }
 
   async handleIncoming(
     message: IncomingMessage,
     onUpdate?: (text: string) => Promise<void>
   ): Promise<string> {
-    if (message.chatType !== "p2p") {
-      return "Only direct messages are supported right now.";
-    }
-
     const command = parseCommand(message);
+    if (command?.name === "whoami") {
+      return this.renderWhoAmI(message);
+    }
+    if (message.chatType === "unknown") {
+      return "Unsupported chat type. Only p2p and group messages are supported.";
+    }
+    if (!this.isSenderAllowed(message)) {
+      return this.renderSenderAccessDenied(message);
+    }
+    if (!this.isChatAllowed(message)) {
+      return this.renderChatAccessDenied(message);
+    }
     if (command?.name === "help") {
       return [
-        "# Bridge Help",
+        "# Lark Codex Help",
         "",
         "- `/help` show commands",
         "- `/status` show current session and run state",
+        "- `/whoami` show your sender/chat/thread identifiers for allowlist setup",
         "- `/new` create and bind a fresh Codex session",
         "- `/session [list [-n N|--all] [--all-projects] [--project <path>]|-h|--help]` show the current bound session, list recent sessions, or show session help",
         "- `/resume [--last|<session-id>|-n N|-h|--all] [--all-projects] [--project <path>] [-C|--cd <dir>]` bind the latest session by default, optionally switching project",
@@ -193,7 +222,7 @@ export class App {
         .then((stats) => stats.isFile())
         .catch(() => false);
       return [
-        "# Bridge Status",
+        "# Lark Codex Status",
         "",
         `- **conversation**: \`${key}\``,
         `- **session**: \`${sessionId}\``,
@@ -537,7 +566,7 @@ export class App {
         ...(query.since ? [`since \`${query.since}\``] : []),
         ...(query.grep ? [`grep \`${query.grep}\``] : [])
       ];
-      await sendEarlyUpdate(`reading ${filters.join(", ")} for \`codex-feishu-bridge.service\`...`);
+      await sendEarlyUpdate(`reading ${filters.join(", ")} for \`lark-codex.service\`...`);
       return this.readBridgeLogs(query);
     }
 
@@ -761,7 +790,7 @@ export class App {
     }
   }
 
-  private buildStartupReadyMessage(title = "Bridge Ready", currentProject?: string): string {
+  private buildStartupReadyMessage(title = "Lark Codex Ready", currentProject?: string): string {
     return [
       `# ${title}`,
       "",
@@ -777,9 +806,11 @@ export class App {
   private titleForCommand(commandName?: string): string {
     switch (commandName) {
       case "help":
-        return "Bridge Help";
+        return "Lark Codex Help";
       case "status":
-        return "Bridge Status";
+        return "Lark Codex Status";
+      case "whoami":
+        return "Who Am I";
       case "new":
         return "New Session";
       case "session":
@@ -826,6 +857,7 @@ export class App {
     switch (commandName) {
       case "help":
       case "status":
+      case "whoami":
       case "session":
       case "project":
       case "approvals":
@@ -880,6 +912,116 @@ export class App {
 
   private buildIsoFooter(): string {
     return this.formatLocalIsoTimestamp(new Date());
+  }
+
+  private prepareIncomingMessage(message: IncomingMessage): IncomingMessage | undefined {
+    const trimmedText = message.text.trim();
+    if (!trimmedText) return undefined;
+    if (message.chatType !== "group") {
+      return { ...message, text: trimmedText };
+    }
+
+    const isSlashCommand = trimmedText.startsWith("/");
+    const mentionedBot = this.isBotMentioned(message);
+    const withoutMentions = mentionedBot ? this.stripLeadingMentions(trimmedText, message) : trimmedText;
+    const withoutPrefix = this.stripCommandPrefix(withoutMentions);
+    const prefixMatched = withoutPrefix !== withoutMentions;
+    const mentionTriggered = this.config.feishu.groupRequireMention && mentionedBot;
+    const prefixTriggered = this.config.feishu.groupRequireCommandPrefix && prefixMatched;
+    const requiresExplicitTrigger =
+      this.config.feishu.groupRequireMention || this.config.feishu.groupRequireCommandPrefix;
+
+    if (requiresExplicitTrigger && !isSlashCommand && !mentionTriggered && !prefixTriggered) {
+      return undefined;
+    }
+
+    const nextText =
+      isSlashCommand
+        ? trimmedText
+        : prefixMatched
+          ? withoutPrefix.trim()
+          : withoutMentions.trim();
+    if (!nextText) return undefined;
+    return { ...message, text: nextText };
+  }
+
+  private isBotMentioned(message: IncomingMessage): boolean {
+    return Boolean(
+      message.mentionsOpenIds?.some((openId) => openId === this.config.feishu.botOpenId)
+    );
+  }
+
+  private stripLeadingMentions(text: string, message: IncomingMessage): string {
+    let next = text;
+    for (const name of message.mentionNames || []) {
+      const mentionPattern = new RegExp(`^@${escapeRegExp(name)}(?:\\s+|[:：,，-]\\s*)?`, "i");
+      while (mentionPattern.test(next)) {
+        next = next.replace(mentionPattern, "").trimStart();
+      }
+    }
+
+    if (next.startsWith("@")) {
+      const slashIndex = next.indexOf("/");
+      if (slashIndex > 0) {
+        return next.slice(slashIndex).trimStart();
+      }
+    }
+    return next;
+  }
+
+  private stripCommandPrefix(text: string): string {
+    const prefix = this.config.feishu.commandPrefix.trim();
+    if (!prefix) return text;
+    const pattern = new RegExp(`^${escapeRegExp(prefix)}(?:\\s+|[:：,，-]\\s*)?`, "i");
+    return pattern.test(text) ? text.replace(pattern, "").trimStart() : text;
+  }
+
+  private isSenderAllowed(message: IncomingMessage): boolean {
+    if (this.config.feishu.allowAllOpenIds) return true;
+    if (!message.senderOpenId) return false;
+    return this.config.feishu.allowedOpenIds.includes(message.senderOpenId);
+  }
+
+  private isChatAllowed(message: IncomingMessage): boolean {
+    if (this.config.feishu.allowedChatIds.length === 0) return true;
+    return this.config.feishu.allowedChatIds.includes(message.chatId);
+  }
+
+  private renderWhoAmI(message: IncomingMessage): string {
+    return [
+      "# Who Am I",
+      "",
+      `- **sender open_id**: \`${message.senderOpenId || "(missing)"}\``,
+      `- **chat id**: \`${message.chatId}\``,
+      `- **chat type**: \`${message.chatType}\``,
+      `- **thread id**: \`${message.threadId || "(none)"}\``,
+      `- **conversation key**: \`${conversationKeyFor(message)}\``,
+      `- **mentioned bot**: \`${this.isBotMentioned(message) ? "yes" : "no"}\``,
+      `- **allowed sender**: \`${this.isSenderAllowed(message) ? "yes" : "no"}\``,
+      `- **allowed chat**: \`${this.isChatAllowed(message) ? "yes" : "no"}\``
+    ].join("\n");
+  }
+
+  private renderSenderAccessDenied(message: IncomingMessage): string {
+    return [
+      "# Access Denied",
+      "",
+      `- **sender open_id**: \`${message.senderOpenId || "(missing)"}\``,
+      `- **chat id**: \`${message.chatId}\``,
+      "- This sender is not in `feishu.allowedOpenIds`.",
+      "- Use `/whoami` to inspect ids, then add the sender or set `feishu.allowAllOpenIds=true`."
+    ].join("\n");
+  }
+
+  private renderChatAccessDenied(message: IncomingMessage): string {
+    return [
+      "# Chat Denied",
+      "",
+      `- **chat id**: \`${message.chatId}\``,
+      `- **chat type**: \`${message.chatType}\``,
+      "- This chat is not in `feishu.allowedChatIds`.",
+      "- Use `/whoami` to inspect ids, then add the chat or clear the chat allowlist."
+    ].join("\n");
   }
 
   private formatLocalIsoTimestamp(date: Date): string {
@@ -1919,7 +2061,7 @@ export class App {
       const journalArgs = [
         "--user",
         "-u",
-        "codex-feishu-bridge.service",
+        "lark-codex.service",
         "-n",
         String(query.limit),
         "--no-pager"
@@ -1941,7 +2083,7 @@ export class App {
       return [
         "# Log",
         "",
-        `- **unit**: \`codex-feishu-bridge.service\``,
+        `- **unit**: \`lark-codex.service\``,
         `- **lines**: \`${query.limit}\``,
         ...(query.since ? [`- **since**: \`${query.since}\``] : []),
         ...(query.grep ? [`- **grep**: \`${query.grep}\``] : []),
@@ -1956,7 +2098,7 @@ export class App {
       return [
         "# Log",
         "",
-        `- **unit**: \`codex-feishu-bridge.service\``,
+        `- **unit**: \`lark-codex.service\``,
         `- **status**: \`failed\``,
         `- **code**: \`${String(maybe.code ?? "(unknown)")}\``,
         "",
@@ -2127,6 +2269,10 @@ function normalizeApprovalReply(text: string): string {
 
 function matchesAny(text: string, terms: string[]): boolean {
   return terms.some((term) => text === term || text.includes(term));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function parseNumberSelections(text: string): number[] {

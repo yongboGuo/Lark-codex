@@ -164,7 +164,7 @@ export class AppServerSessionClient {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-feishu-bridge", version: "0.1.0" },
+      clientInfo: { name: "lark-codex", version: "0.1.0" },
       capabilities: { experimentalApi: false }
     });
   }
@@ -258,7 +258,7 @@ export class AppServerSessionClient {
           contentItems: [
             {
               type: "inputText",
-              text: `codex-feishu-bridge does not support dynamic tool calls (${String(params.tool || "unknown")})`
+              text: `lark-codex does not support dynamic tool calls (${String(params.tool || "unknown")})`
             }
           ]
         };

@@ -4,6 +4,13 @@
     "port": 3300
   },
   "feishu": {
+    "allowAllOpenIds": false,
+    "allowedOpenIds": [],
+    "allowedChatIds": [],
+    "groupRequireMention": true,
+    "groupRequireCommandPrefix": false,
+    "commandPrefix": "codex",
+    "replyMode": "reply",
     "wsLoggerLevel": "info",
     "reconnectReadyDebounceMs": 60000,
     "sendRetry": {
@@ -16,8 +23,8 @@
   "codex": {
     "bin": "codex",
     "profileMode": "isolated",
-    "home": "$HOME/.codex-feishu-bridge",
-    "sessionsDir": "$HOME/.codex-feishu-bridge/sessions",
+    "home": "$HOME/.lark-codex",
+    "sessionsDir": "$HOME/.lark-codex/sessions",
     "backendMode": "app-server",
     "sandboxMode": "default",
     "runTimeoutMs": 600000,
@@ -47,6 +54,6 @@
     "includeProject": true
   },
   "paths": {
-    "storePath": "$HOME/.local/share/codex-feishu-bridge/bindings.json"
+    "storePath": "$HOME/.local/share/lark-codex/bindings.json"
   }
 }

@@ -27,6 +27,8 @@ export interface IncomingMessage {
   threadId?: string;
   rootId?: string;
   senderOpenId?: string;
+  mentionsOpenIds?: string[];
+  mentionNames?: string[];
   text: string;
 }
 

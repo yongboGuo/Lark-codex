@@ -1,175 +1,150 @@
-# codex-feishu-bridge
+# Lark-codex
 
-Thin Feishu-native relay for Codex native sessions.
+Feishu/Lark-native bridge for real Codex sessions.
 
-## Goal
+`Lark-codex` forwards Feishu messages into Codex, keeps Codex native sessions as the source of truth, and returns progress plus final results back into Feishu conversations.
 
-`codex-feishu-bridge` forwards Feishu input into real Codex sessions and sends Codex output back to Feishu. Codex native sessions are the single source of truth for conversation state.
+## What Changed From Upstream
 
-## Principles
+- Rebranded from `codex-feishu-bridge` to `lark-codex`
+- Added sender and chat allowlists
+- Added group and thread support instead of DM-only handling
+- Added group trigger controls with `@bot` mention and/or command prefix
+- Added `/whoami` for allowlist onboarding and diagnostics
+- Added outbound reply modes: `reply`, `text`, `interactive`
+- Kept Codex native session binding, approvals, and project/session controls
 
-- Feishu is the control surface.
-- Codex is the execution engine.
-- Codex native sessions are the only session truth.
-- The bridge stores only bindings and runtime metadata.
-- Do not replay message history to simulate continuity.
-- Do not create a second assistant/session abstraction above Codex.
+## Key Features
 
-## Scope
+- Feishu websocket ingress plus outbound replies
+- DM conversations and group threads mapped to Codex sessions
+- Codex backends: `app-server`, `spawn`, `terminal`
+- Feishu-side approvals and user input replies for `app-server`
+- Project binding, session resume, model/profile/search controls
+- Local command passthrough: `/git`, `/pwd`, `/ls`, `/cat`, `/tree`, `/find`, `/rg`
 
-### In scope
-- Feishu bot websocket ingress
-- DM-first message handling
-- Feishu conversation/thread to Codex session binding
-- Create/resume/stop native Codex sessions
-- Stream Codex output back to Feishu
-- Minimal command set for control and status
-- Small local metadata store for bindings and active-run locks
+## Quick Start
 
-### Out of scope (initially)
-- Broad plugin platform
-- Independent long-term memory system
-- Synthetic conversation storage
-- Multi-provider orchestration
-- Heavy card UX or product shell behavior
+1. Install dependencies:
 
-## Initial command ideas
+```bash
+npm install
+```
+
+2. Prepare config:
+
+- env template: `deploy/config/bridge.env.example`
+- json template: `deploy/config/config.json`
+- install location: `~/.config/lark-codex/`
+
+3. Required env values:
+
+- `FEISHU_APP_ID`
+- `FEISHU_APP_SECRET`
+- `FEISHU_BOT_OPEN_ID`
+
+4. Recommended access control defaults:
+
+- `FEISHU_ALLOW_ALL_OPEN_IDS=false`
+- `FEISHU_ALLOWED_OPEN_IDS=ou_xxx,ou_yyy`
+- `FEISHU_ALLOWED_CHAT_IDS=oc_xxx`
+
+5. Start locally:
+
+```bash
+npm run dev
+```
+
+6. Or install as a user service:
+
+```bash
+./install.sh
+```
+
+## Group And Thread Behavior
+
+- DM messages are handled directly.
+- Group messages are supported.
+- Group threads use `group:<chat_id>:thread:<thread_id>` as the conversation key.
+- Non-threaded group chats fall back to `chat:<chat_id>`.
+- By default, group messages require an explicit `@bot` mention.
+- You can additionally require a command prefix such as `codex`.
+- Plain slash commands like `/status` and `/whoami` are also accepted.
+
+## Reply Modes
+
+- `reply`: reply to the original Feishu message using plain text, best for chat-like interaction
+- `text`: send plain text messages to the chat without reply threading
+- `interactive`: send interactive cards, closer to the original upstream style
+
+Set this with `FEISHU_REPLY_MODE` or `feishu.replyMode` in `config.json`.
+
+## Useful Commands
 
 - `/help`
 - `/status`
+- `/whoami`
 - `/new`
 - `/resume`
 - `/session`
 - `/stop`
 - `/project`
 - `/approvals`
+- `/search`
+- `/model`
+- `/profile`
+- `/git`
+- `/log`
 
-## Status
+Use `/whoami` first in Feishu to capture:
 
-Working v1 bridge:
+- `sender open_id`
+- `chat id`
+- `thread id`
+- resolved `conversation key`
 
-- Feishu long-connection receive/send
-- DM receive plus interactive-card replies
-- conversation to native Codex session binding
-- `/help` `/status` `/new` `/resume` `/session` `/stop` `/project` `/approvals` `/log`
-- `/search` `/model` `/profile`
-- `/git` `/pwd` `/ls` `/cat` `/tree` `/find` `/rg`
-- `/project bind <path>` to rebind a conversation to another directory under the allowed project roots
-- `/approvals` to switch the Codex approval mode used for future runs
-- `/log [-n N] [--since <expr>] [--grep <text>]` to tail recent bridge service logs from systemd journal
-- backend modes: `app-server`, `spawn`, and experimental `terminal`
+That makes it easy to fill `allowedOpenIds` and `allowedChatIds`.
 
-## Run
+## Config Notes
 
-1. Copy `.env.example` to `.env` and fill in Feishu credentials.
-2. Install dependencies with `npm install`.
-3. Start the bridge with `npm run dev`.
+The checked-in `deploy/config/config.json` now includes:
 
-For a full local install from the current checkout, including package install, build, user unit install, and hard restart:
+- `feishu.allowAllOpenIds`
+- `feishu.allowedOpenIds`
+- `feishu.allowedChatIds`
+- `feishu.groupRequireMention`
+- `feishu.groupRequireCommandPrefix`
+- `feishu.commandPrefix`
+- `feishu.replyMode`
+
+Default local paths were also renamed:
+
+- Codex home: `~/.lark-codex`
+- Sessions: `~/.lark-codex/sessions`
+- Binding store: `~/.local/share/lark-codex/bindings.json`
+- Service env/config: `~/.config/lark-codex/`
+
+## Service Install
+
+- systemd template: `deploy/systemd/lark-codex.service.in`
+- installed unit: `~/.config/systemd/user/lark-codex.service`
+- installed binary: `lark-codex`
+
+`install.sh` builds the package, installs the binary, writes the user service, preserves existing local config, and restarts the service.
+
+## Local Testing
+
+For CLI-only testing without Feishu:
 
 ```bash
-./install.sh
+npm run cli -- --chat-id test-terminal
 ```
 
-Or:
+That uses the same binding rules as a `p2p:<chat_id>` conversation.
+
+## Validation
 
 ```bash
-npm run install:local
+npm run check
+npm run build
 ```
-
-## User Service
-
-- Repo-owned systemd template: `deploy/systemd/codex-feishu-bridge.service.in`
-- User config templates: `deploy/config/bridge.env.example` and `deploy/config/config.json`
-- `config.json` is the primary bridge config. `bridge.env` is only for secrets,
-  proxy/custom-CA settings, the config path, and similar process env.
-- Optional startup-ready notification: set `FEISHU_STARTUP_NOTIFY_CHAT_ID` in `bridge.env`
-  to get a one-time Feishu message after the websocket is connected and outbound
-  message sending is working.
-- Install or update the user service with:
-
-```bash
-./install.sh
-```
-
-- `install.sh` renders the current checkout path into the unit, writes the unit to:
-  `~/.config/systemd/user/codex-feishu-bridge.service`
-- `install.sh` builds a detached package payload, installs the global `codex-feishu-bridge`
-  binary under your npm prefix, and points the user service at that binary.
-- It preserves existing `~/.config/codex-feishu-bridge/bridge.env` and `config.json` if they
-  already exist.
-- Machine-specific proxy or custom CA settings should live in
-  `~/.config/codex-feishu-bridge/bridge.env`, not in the repo-owned systemd unit template.
-- Fresh installs rewrite the checked-in JSON template into a usable local config:
-  `project.defaultPath` becomes the current checkout and `project.allowedRoots`
-  includes that checkout.
-- Project access is controlled by `project.allowedRoots`. `project.defaultPath`
-  must stay under one of those allowed roots.
-- `project.defaultSearchEnabled=true` makes new conversations and `/new`
-  sessions default to live web search enabled.
-- The checked-in JSON template defaults to `codex.backendMode = "app-server"`
-  and `codex.sandboxMode = "default"` so approvals can be mediated in Feishu.
-- The script asks for confirmation, then installs or updates the unit, reloads user systemd,
-  enables the service, and performs a hard restart.
-
-For local testing without Feishu, run `npm run cli -- --chat-id test-terminal`. This uses the same binding logic as Feishu `p2p:<chat_id>` conversations, so the chosen `chatId` becomes the reusable bridge conversation key.
-
-## Backend Mode
-
-- `codex.backendMode = "spawn"` starts one `codex exec` or `codex exec resume`
-  process per turn while the bridge persists the native session id.
-- `spawn` now emits lightweight progress updates such as session start, thinking, long-run heartbeat, and upstream websocket retry notices when Codex exposes them.
-- `codex.backendMode = "app-server"` keeps a local
-  `codex app-server` subprocess per bound native session and talks to it over
-  stdio JSON-RPC for `thread/start`, `thread/resume`, `turn/start`,
-  `turn/interrupt`, approval callbacks, and user-input requests.
-- `codex.backendMode = "terminal"` is experimental. It is intended for a
-  terminal-derived Codex experience projected into Feishu, but the current
-  Codex interactive CLI is still a full-screen TUI and not yet reliable enough
-  to use as the default backend.
-- In `spawn`, `codex.sandboxMode = "workspace-write"` maps to Codex `--full-auto`.
-- In `spawn`, `codex.sandboxMode = "danger-full-access"` maps to Codex `--dangerously-bypass-approvals-and-sandbox`.
-- In `app-server`, `codex.sandboxMode = "default"` maps to `sandbox=workspace-write` plus `approvalPolicy=on-request`.
-- In `app-server`, `codex.sandboxMode = "danger-full-access"` maps to `sandbox=danger-full-access` plus `approvalPolicy=never`.
-- `codex.approvalTimeoutMs` controls how long the bridge waits for a Feishu approval or user-input reply before sending a timeout-safe response back to Codex.
-- `codex.runTimeoutMs` controls the maximum lifetime of one active Codex run
-  before the bridge terminates it.
-- `codex.spawn.statusIntervalMs` controls the heartbeat interval for long-running
-  `spawn` turns. Set it to `0` to disable heartbeats.
-- `feishu.sendRetry.maxAttempts`, `feishu.sendRetry.baseDelayMs`,
-  `feishu.sendRetry.multiplier`, and `feishu.sendRetry.maxDelayMs` control
-  retry/backoff for transient Feishu send failures such as `502`, `429`, and
-  short network errors. `maxAttempts = 0` means one send attempt with no retry.
-- `feishu.wsLoggerLevel` controls how much of the Feishu SDK websocket lifecycle is mirrored into the service logs.
-- `feishu.reconnectReadyDebounceMs` controls how often the bridge may send a Feishu `Reconnected` ready card after websocket recovery.
-- Outbound Feishu replies currently use interactive cards with a schema `2.0` markdown body, card title, chat-list summary, and per-reply header template color.
-- `codex.terminal.flushIdleMs` controls the quiet window before terminal output
-  is projected back to Feishu as one reply.
-- `codex.terminal.flushMaxChars` caps one terminal-mode Feishu reply so noisy
-  screens do not flood the chat.
-- Numeric config values must be integers. Invalid values now fail fast during startup.
-
-The bridge still accepts the old env-style JSON keys as a compatibility fallback,
-but new config should use the structured schema.
-
-## Feishu Rendering
-
-- Inbound Feishu messages support both plain `text` and rich `post` payloads.
-- Outbound replies use Feishu interactive cards.
-- The card body keeps the same markdown content string the bridge generates, plus a raw fenced markdown appendix for clients that do not render every markdown feature consistently.
-- Long replies are split on markdown block boundaries so fenced code blocks stay valid across chunks.
-
-## Codex Profile Mode
-
-- `codex.profileMode = "isolated"` gives the bridge its own Codex home. This is
-  the default in development and is the safest mode for testing.
-- `codex.profileMode = "personal"` points the bridge at your personal `~/.codex`
-  so Feishu and your local terminal can reuse the same Codex sessions.
-- `personal + spawn` is currently a compatibility mode, not the safest one. It may interfere with an interactive Codex instance that is already running against the same home.
-
-## Session Binding
-
-- Feishu does not provide a native Codex session id. The bridge binds a Feishu conversation key to a Codex session id in its local store.
-- `p2p` chats bind on `p2p:<chat_id>`.
-- If a conversation already has a bound session, the bridge reuses it.
-- If a run is already active for that conversation, the bridge rejects a second concurrent turn instead of guessing which live run to reuse.

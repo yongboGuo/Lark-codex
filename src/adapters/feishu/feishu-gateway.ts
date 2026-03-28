@@ -93,7 +93,7 @@ export class FeishuGateway {
     const chunks = splitMessageText(text, FEISHU_POST_SOFT_LIMIT);
     for (const [index, chunk] of chunks.entries()) {
       await this.sendChunkWithRetry(
-        message.chatId,
+        message,
         chunk,
         message.title,
         message.template,
@@ -130,7 +130,7 @@ export class FeishuGateway {
   }
 
   private async sendChunkWithRetry(
-    chatId: string,
+    message: OutgoingMessage,
     chunk: string,
     title?: string,
     template?: OutgoingMessage["template"],
@@ -142,19 +142,37 @@ export class FeishuGateway {
 
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
-        await this.client.im.v1.message.create({
-          params: {
-            receive_id_type: "chat_id"
-          },
-          data: {
-            receive_id: chatId,
-            msg_type: "interactive",
-            content: buildInteractiveCardContent(chunk, title, template, footer)
-          }
-        });
+        const outbound = buildOutboundMessagePayload(this.config.replyMode, chunk, title, template, footer);
+        const usedReplyApi = this.config.replyMode === "reply" && !!message.replyToMessageId;
+        if (usedReplyApi) {
+          await this.client.im.v1.message.reply({
+            path: {
+              message_id: message.replyToMessageId!
+            },
+            data: {
+              msg_type: outbound.msgType,
+              content: outbound.content,
+              reply_in_thread: Boolean(message.threadId)
+            }
+          });
+        } else {
+          await this.client.im.v1.message.create({
+            params: {
+              receive_id_type: "chat_id"
+            },
+            data: {
+              receive_id: message.chatId,
+              msg_type: outbound.msgType,
+              content: outbound.content
+            }
+          });
+        }
         console.log("Feishu outbound message sent", {
-          chatId,
+          chatId: message.chatId,
           attempt,
+          mode: this.config.replyMode,
+          usedReplyApi,
+          replyToMessageId: message.replyToMessageId,
           textPreview: previewText(chunk)
         });
         return;
@@ -291,6 +309,16 @@ function normalizeIncoming(data: any): IncomingMessage | undefined {
     threadId: data.message.thread_id,
     rootId: data.message.root_id,
     senderOpenId: data.sender?.sender_id?.open_id,
+    mentionsOpenIds: Array.isArray(data.message.mentions)
+      ? data.message.mentions
+          .map((item: { id?: { open_id?: unknown } }) => item?.id?.open_id)
+          .filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0)
+      : undefined,
+    mentionNames: Array.isArray(data.message.mentions)
+      ? data.message.mentions
+          .map((item: { name?: unknown }) => item?.name)
+          .filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0)
+      : undefined,
     text
   };
 }
@@ -451,6 +479,34 @@ function buildInteractiveCardContent(
         }
       ]
     }
+  });
+}
+
+function buildOutboundMessagePayload(
+  replyMode: AppConfig["feishu"]["replyMode"],
+  text: string,
+  title?: string,
+  template?: OutgoingMessage["template"],
+  footer?: string
+): { msgType: "interactive" | "text"; content: string } {
+  if (replyMode === "interactive") {
+    return {
+      msgType: "interactive",
+      content: buildInteractiveCardContent(text, title, template, footer)
+    };
+  }
+  return {
+    msgType: "text",
+    content: buildTextMessageContent(text, title, footer)
+  };
+}
+
+function buildTextMessageContent(text: string, title?: string, footer?: string): string {
+  const parts = [title?.trim(), text.trim(), footer?.trim()].filter(
+    (value): value is string => Boolean(value)
+  );
+  return JSON.stringify({
+    text: parts.join("\n\n") || " "
   });
 }
 
