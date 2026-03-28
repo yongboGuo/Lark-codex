@@ -61,6 +61,12 @@ npm run dev
 ./install.sh
 ```
 
+For macOS, you can prepare the local config and LaunchAgent without starting the service yet:
+
+```bash
+./install.sh --prepare-only --yes
+```
+
 ## Group And Thread Behavior
 
 - DM messages are handled directly.
@@ -127,10 +133,12 @@ Default local paths were also renamed:
 ## Service Install
 
 - systemd template: `deploy/systemd/lark-codex.service.in`
+- launchd template: `deploy/launchd/com.lark-codex.bridge.plist.in`
 - installed unit: `~/.config/systemd/user/lark-codex.service`
+- installed LaunchAgent: `~/Library/LaunchAgents/com.lark-codex.bridge.plist`
 - installed binary: `lark-codex`
 
-`install.sh` builds the package, installs the binary, writes the user service, preserves existing local config, and restarts the service.
+`install.sh` builds the package, installs the binary, writes the local service definition, preserves existing local config, and starts the service when required Feishu secrets are already configured.
 
 ## Local Testing
 
