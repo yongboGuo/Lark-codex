@@ -1,91 +1,108 @@
 # Lark-codex
 
-Feishu/Lark-native bridge for real Codex sessions.
+English | [简体中文](./README.zh-CN.md)
 
-`Lark-codex` forwards Feishu messages into Codex, keeps Codex native sessions as the source of truth, and returns progress plus final results back into Feishu conversations.
+Lark-codex connects Feishu/Lark chats to real Codex sessions running on your machine.
 
-## What Changed From Upstream
+It lets you:
 
-- Rebranded from `codex-feishu-bridge` to `lark-codex`
-- Added sender and chat allowlists
-- Added group and thread support instead of DM-only handling
-- Added group trigger controls with `@bot` mention and/or command prefix
-- Added `/whoami` for allowlist onboarding and diagnostics
-- Added outbound reply modes: `reply`, `text`, `interactive`
-- Kept Codex native session binding, approvals, and project/session controls
+- send prompts to Codex from Feishu
+- receive progress updates and final answers in Feishu
+- switch projects from chat
+- create, resume, and stop Codex sessions
+- use the same bridge in DM and group/thread scenarios
 
-## Key Features
+## What This Project Solves
 
-- Feishu websocket ingress plus outbound replies
-- DM conversations and group threads mapped to Codex sessions
-- Codex backends: `app-server`, `spawn`, `terminal`
-- Feishu-side approvals and user input replies for `app-server`
-- Project binding, session resume, model/profile/search controls
-- Local command passthrough: `/git`, `/pwd`, `/ls`, `/cat`, `/tree`, `/find`, `/rg`
+Codex is strong in the terminal, but many people want to use it from Feishu.
+
+Lark-codex adds a practical bridge:
+
+- Feishu is the chat surface
+- Codex is the execution engine
+- native Codex sessions stay the source of truth
+- the bridge only stores lightweight bindings and runtime state
+
+## Main Features
+
+- DM support
+- Group and thread support
+- Project switching from chat
+- Session create/resume/stop
+- Reply modes: `reply`, `text`, `interactive`
+- Access control with `allowedOpenIds` and `allowedChatIds`
+- Feishu-side approval / input flow for `app-server`
+- Local utility commands such as `/git`, `/ls`, `/rg`, `/cat`
+
+## How It Works
+
+1. A user sends a message in Feishu.
+2. Lark-codex receives the event through Feishu long connection.
+3. The bridge resolves the conversation and bound project.
+4. The message is forwarded into Codex.
+5. Progress and final output are sent back to Feishu.
+
+## Requirements
+
+- Node.js 20+
+- `codex` installed and working locally
+- A Feishu/Lark self-built app with bot ability enabled
+- Feishu event subscription configured for long connection mode
 
 ## Quick Start
 
-1. Install dependencies:
+### 1. Install dependencies
 
 ```bash
 npm install
 ```
 
-2. Prepare config:
+### 2. Prepare local config
 
-- env template: `deploy/config/bridge.env.example`
-- json template: `deploy/config/config.json`
-- install location: `~/.config/lark-codex/`
+Templates:
 
-3. Required env values:
+- `deploy/config/bridge.env.example`
+- `deploy/config/config.json`
+
+Local runtime paths:
+
+- `~/.config/lark-codex/bridge.env`
+- `~/.config/lark-codex/config.json`
+
+### 3. Fill required Feishu values
+
+In `bridge.env`:
 
 - `FEISHU_APP_ID`
 - `FEISHU_APP_SECRET`
 - `FEISHU_BOT_OPEN_ID`
 
-4. Recommended access control defaults:
-
-- `FEISHU_ALLOW_ALL_OPEN_IDS=false`
-- `FEISHU_ALLOWED_OPEN_IDS=ou_xxx,ou_yyy`
-- `FEISHU_ALLOWED_CHAT_IDS=oc_xxx`
-
-5. Start locally:
+### 4. Start locally
 
 ```bash
 npm run dev
 ```
 
-6. Or install as a user service:
+### 5. Or install as a local service
 
 ```bash
-./install.sh
+./install.sh --yes
 ```
 
-For macOS, you can prepare the local config and LaunchAgent without starting the service yet:
+macOS supports `launchd`. Linux supports `systemd`.
 
-```bash
-./install.sh --prepare-only --yes
-```
+## Recommended First-Time Setup
 
-## Group And Thread Behavior
+1. Start the bridge.
+2. Open a DM with your bot in Feishu.
+3. Send `/whoami`.
+4. Copy your real `sender open_id`.
+5. Put that value into `allowedOpenIds`.
+6. Send `/status`.
+7. Send `/new`.
+8. Send a normal prompt.
 
-- DM messages are handled directly.
-- Group messages are supported.
-- Group threads use `group:<chat_id>:thread:<thread_id>` as the conversation key.
-- Non-threaded group chats fall back to `chat:<chat_id>`.
-- By default, group messages require an explicit `@bot` mention.
-- You can additionally require a command prefix such as `codex`.
-- Plain slash commands like `/status` and `/whoami` are also accepted.
-
-## Reply Modes
-
-- `reply`: reply to the original Feishu message using plain text, best for chat-like interaction
-- `text`: send plain text messages to the chat without reply threading
-- `interactive`: send interactive cards, closer to the original upstream style
-
-Set this with `FEISHU_REPLY_MODE` or `feishu.replyMode` in `config.json`.
-
-## Useful Commands
+## Common Chat Commands
 
 - `/help`
 - `/status`
@@ -95,25 +112,42 @@ Set this with `FEISHU_REPLY_MODE` or `feishu.replyMode` in `config.json`.
 - `/session`
 - `/stop`
 - `/project`
-- `/approvals`
-- `/search`
-- `/model`
-- `/profile`
-- `/git`
-- `/log`
+- `/project list`
+- `/project bind <path>`
+- `/search [on|off]`
+- `/model [name|clear]`
+- `/profile [name|clear]`
 
-Use `/whoami` first in Feishu to capture:
+## Project Switching
 
-- `sender open_id`
-- `chat id`
-- `thread id`
-- resolved `conversation key`
+Switch to a project directly:
 
-That makes it easy to fill `allowedOpenIds` and `allowedChatIds`.
+```text
+/project bind /absolute/path/to/project
+```
 
-## Config Notes
+Switch using the list:
 
-The checked-in `deploy/config/config.json` now includes:
+```text
+/project list
+/project bind -n 3
+```
+
+Create and bind a missing directory:
+
+```text
+/project bind -m /absolute/path/to/new-project
+```
+
+Important behavior:
+
+- changing project clears the old bound session
+- after switching project, use `/new` to start a fresh session
+- or use `/resume --project <path>` to bind an existing session in that project
+
+## Configuration Notes
+
+Important Feishu settings:
 
 - `feishu.allowAllOpenIds`
 - `feishu.allowedOpenIds`
@@ -123,32 +157,32 @@ The checked-in `deploy/config/config.json` now includes:
 - `feishu.commandPrefix`
 - `feishu.replyMode`
 
-Default local paths were also renamed:
+Important Codex settings:
 
-- Codex home: `~/.lark-codex`
-- Sessions: `~/.lark-codex/sessions`
-- Binding store: `~/.local/share/lark-codex/bindings.json`
-- Service env/config: `~/.config/lark-codex/`
+- `codex.profileMode`
+- `codex.backendMode`
+- `codex.sandboxMode`
+- `project.defaultPath`
+- `project.allowedRoots`
+- `project.defaultSearchEnabled`
 
-## Service Install
+## Reply Modes
+
+- `reply`: reply to the original Feishu message
+- `text`: send plain text messages to the chat
+- `interactive`: send interactive cards
+
+## Deployment
+
+### macOS
+
+- LaunchAgent template: `deploy/launchd/com.lark-codex.bridge.plist.in`
+- Installed LaunchAgent: `~/Library/LaunchAgents/com.lark-codex.bridge.plist`
+
+### Linux
 
 - systemd template: `deploy/systemd/lark-codex.service.in`
-- launchd template: `deploy/launchd/com.lark-codex.bridge.plist.in`
-- installed unit: `~/.config/systemd/user/lark-codex.service`
-- installed LaunchAgent: `~/Library/LaunchAgents/com.lark-codex.bridge.plist`
-- installed binary: `lark-codex`
-
-`install.sh` builds the package, installs the binary, writes the local service definition, preserves existing local config, and starts the service when required Feishu secrets are already configured.
-
-## Local Testing
-
-For CLI-only testing without Feishu:
-
-```bash
-npm run cli -- --chat-id test-terminal
-```
-
-That uses the same binding rules as a `p2p:<chat_id>` conversation.
+- Installed user unit: `~/.config/systemd/user/lark-codex.service`
 
 ## Validation
 
@@ -156,3 +190,15 @@ That uses the same binding rules as a `p2p:<chat_id>` conversation.
 npm run check
 npm run build
 ```
+
+## Security Note
+
+This repository should not contain your real secrets.
+
+Do not commit:
+
+- Feishu app secrets
+- personal `open_id` / `chat_id`
+- local runtime config under `~/.config/lark-codex/`
+
+Use placeholders in tracked files and keep real values in local config only.
