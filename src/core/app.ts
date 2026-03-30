@@ -233,7 +233,7 @@ export class App {
         `- **sandbox**: \`${this.config.codex.sandboxMode}\``,
         `- **auth**: \`${runtimeMeta.authMode || "(unknown)"}\``,
         `- **agents.md**: \`${hasAgents ? agentsPath : "<none>"}\``,
-        `- **search**: \`${existing?.searchEnabled ? "on" : "off"}\``,
+        `- **search**: \`${(existing?.searchEnabled ?? this.config.project.defaultSearchEnabled) ? "on" : "off"}\``,
         `- **model**: \`${existing?.model || "(default)"}\``,
         `- **profile**: \`${existing?.profile || "(default)"}\``,
         `- **run**: \`${activeRun ? `${activeRun.status}:${activeRun.runId}` : "idle"}\``,
@@ -539,8 +539,14 @@ export class App {
         project = await this.resolveProject(requested, currentProject, createMissing);
       }
 
+      const projectChanged = Boolean(binding && binding.project !== project);
       const nextBinding = binding
-        ? { ...binding, project, updatedAt: new Date().toISOString() }
+        ? {
+            ...binding,
+            project,
+            codexSessionId: projectChanged ? undefined : binding.codexSessionId,
+            updatedAt: new Date().toISOString()
+          }
         : this.makeBinding(key, undefined, project);
       await sendEarlyUpdate(`binding project \`${project}\`...`);
       await this.store.put(nextBinding);
@@ -549,6 +555,12 @@ export class App {
         "",
         `- **project**: \`${project}\``,
         `- **trusted**: \`${trustedProjects.includes(project) ? "yes" : "no"}\``,
+        ...(projectChanged
+          ? [
+              "- **session**: `(cleared)`",
+              "- Use `/new` to start a fresh session in this project, or `/resume --project <path>` to bind an existing session there."
+            ]
+          : []),
         ...(bindWarning ? [`- **warning**: ${bindWarning}`] : [])
       ].join("\n");
     }
